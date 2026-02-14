@@ -7,8 +7,9 @@ from backend.utils.io import read_json
 
 
 DEFAULT_PERF_CONFIG: dict[str, Any] = {
-    "gemini_flash_max_candidates": 4,
-    "gemini_pro_max_candidates": 2,
+    "pipeline_mode": "balanced",
+    "gemini_flash_max_candidates": 6,
+    "gemini_pro_max_candidates": 3,
     "gemini_flash_concurrency": 4,
     "gemini_pro_concurrency": 2,
     "gemini_flash_timeout_sec": 30,

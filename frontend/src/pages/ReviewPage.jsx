@@ -3,6 +3,7 @@ import { client } from '../api/client'
 
 export default function ReviewPage({ runId }) {
   const [events, setEvents] = useState([])
+  const [trace, setTrace] = useState({ packets: [] })
   const [decisions, setDecisions] = useState({})
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -12,14 +13,27 @@ export default function ReviewPage({ runId }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const resp = await client.get(`/api/runs/${runId}/events`)
-        setEvents(resp.data.events || [])
+        const [eventsResp, traceResp] = await Promise.all([
+          client.get(`/api/runs/${runId}/events`),
+          client.get(`/api/runs/${runId}/trace`),
+        ])
+        setEvents(eventsResp.data.events || [])
+        setTrace(traceResp.data || { packets: [] })
       } catch (err) {
         setError(err?.response?.data?.detail || err.message)
       }
     }
     load()
   }, [runId])
+
+  const traceByPacketId = useMemo(() => {
+    const entries = Array.isArray(trace.packets) ? trace.packets : []
+    const map = {}
+    entries.forEach((entry) => {
+      map[entry.packet_id] = entry
+    })
+    return map
+  }, [trace])
 
   const saveDecision = async (eventId) => {
     const decision = decisions[eventId] || { decision: 'ACCEPT', reviewer_notes: '', include_plate: false }
@@ -64,6 +78,8 @@ export default function ReviewPage({ runId }) {
         <div key={event.event_id} className="event-card">
           <h3>{event.event_type}</h3>
           <p><b>ID:</b> {event.event_id}</p>
+          <p><b>Packet ID:</b> {event.packet_id || 'N/A'}</p>
+          <p><b>Source:</b> {event.source_stage || 'N/A'}</p>
           <p><b>Window:</b> {event.start_time.toFixed(2)}s - {event.end_time.toFixed(2)}s</p>
           <p><b>Confidence:</b> {event.confidence.toFixed(2)}</p>
           <p><b>Risk:</b> {event.risk_score.toFixed(1)}</p>
@@ -77,6 +93,18 @@ export default function ReviewPage({ runId }) {
                 </a>
               ))}
             </div>
+          )}
+
+          {traceByPacketId[event.packet_id] && (
+            <details className="trace-panel">
+              <summary>Lineage Trace</summary>
+              <p><b>Local:</b> {traceByPacketId[event.packet_id]?.local?.proposed_event_type} (score {traceByPacketId[event.packet_id]?.local?.local_score})</p>
+              <p><b>Flash:</b> {traceByPacketId[event.packet_id]?.flash?.status || 'N/A'}</p>
+              <p><b>Pro:</b> {traceByPacketId[event.packet_id]?.pro?.status || 'N/A'}</p>
+              {Array.isArray(traceByPacketId[event.packet_id]?.local?.reason_codes) && (
+                <p><b>Reasons:</b> {traceByPacketId[event.packet_id].local.reason_codes.join(', ')}</p>
+              )}
+            </details>
           )}
 
           <label className="field">

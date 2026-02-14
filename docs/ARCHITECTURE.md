@@ -44,6 +44,9 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - Executes Flash and Pro calls concurrently with configurable worker limits.
 - Falls back to deterministic placeholder outputs if API unavailable/fails.
 - Writes `flash_events.json` and `pro_events.json`.
+- Writes packet-linked decision artifacts:
+  - `flash_decisions.json`
+  - `pro_decisions.json`
 
 7. Postprocess (`backend/postprocess/merge.py`)
 - Merges Flash/Pro outputs, blends local and model confidence, selects evidence frames.
@@ -53,6 +56,11 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - Builds HTML report and PDF/fallback text file.
 - Copies event-linked evidence frames to `export/evidence/<event_id>/` and embeds thumbnails in report HTML/PDF.
 - Packages artifacts into `export/case_pack.zip`.
+
+9. Traceability (`backend/postprocess/merge.py`)
+- Merges by strict `packet_id` lineage only (no fuzzy type/time matching).
+- Writes:
+  - `trace.json` with `local -> flash -> pro -> final/dropped` lineage per packet.
 
 9. Logging (`backend/logging_utils/json_logger.py`)
 - Per-run JSONL logs in `pipeline.log.jsonl`.
@@ -68,6 +76,10 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - `flash_events.json`
 - `pro_events.json`
 - `events_final.json`
+- `packets.json`
+- `flash_decisions.json`
+- `pro_decisions.json`
+- `trace.json`
 - `review.json`
 - `pipeline.log.jsonl`
 - `export/report.html`
@@ -98,7 +110,10 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 7. `GET /api/runs/{run_id}/artifact?path=<relative_or_abs_within_run>`
 - returns a run-local artifact file (used by UI to show evidence images)
 
-8. `GET /api/runs/{run_id}/export`
+8. `GET /api/runs/{run_id}/trace`
+- returns lineage trace per packet for transparency/debugging
+
+9. `GET /api/runs/{run_id}/export`
 - returns zip case pack
 
 ## Failure and Fallback Behavior

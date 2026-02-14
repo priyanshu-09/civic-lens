@@ -65,8 +65,9 @@ export default function StatusPage({ runId, onReviewReady }) {
           {status.stage_message && <p><b>Details:</b> {status.stage_message}</p>}
           {status.metrics && (
             <p>
-              <b>Metrics:</b> candidates {status.metrics.flash_done || 0}/{status.metrics.candidate_total || 0},
-              pro {status.metrics.pro_done || 0}/{status.metrics.pro_queued || 0}
+              <b>Metrics:</b> packets {status.metrics.flash_done || 0}/{status.metrics.packets_sent_flash || status.metrics.candidate_total || 0},
+              pro {status.metrics.pro_done || 0}/{status.metrics.packets_sent_pro || status.metrics.pro_queued || 0},
+              finalized {status.metrics.packets_finalized || 0}
             </p>
           )}
           {status.error_message && <p className="error"><b>Error:</b> {status.error_message}</p>}

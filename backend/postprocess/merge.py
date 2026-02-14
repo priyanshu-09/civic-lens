@@ -1,101 +1,150 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from backend.models.types import Candidate, FinalEvent, FlashEvent
+from backend.models.types import FinalEvent
 from backend.utils.io import read_json, write_json
 
 
-def _normalize_frame_path(run_dir: Path, frame_path: str) -> str:
-    p = Path(frame_path)
-    if p.is_absolute():
-        try:
-            return str(p.resolve().relative_to(run_dir.resolve()))
-        except ValueError:
-            return str(p)
-    return str(p)
+def _event_type_from(resp: dict[str, Any]) -> str:
+    return str(resp.get("event_type", "RECKLESS_DRIVING"))
 
 
-def _select_evidence_frames(run_dir: Path, manifest: dict, start: float, end: float) -> list[str]:
-    frames = manifest.get("frames", [])
-    in_window = [f for f in frames if start <= f["ts_sec"] <= end]
-    if not in_window:
-        return []
-    if len(in_window) <= 3:
-        return [_normalize_frame_path(run_dir, f["path"]) for f in in_window]
-    mid = len(in_window) // 2
-    picked = [in_window[0]["path"], in_window[mid]["path"], in_window[-1]["path"]]
-    return [_normalize_frame_path(run_dir, p) for p in picked]
+def _anchor_paths(packet: dict[str, Any]) -> list[str]:
+    anchors = packet.get("anchor_frames", [])
+    out: list[str] = []
+    for a in anchors[:3]:
+        p = a.get("path")
+        if isinstance(p, str) and p:
+            out.append(p)
+    return out
 
 
 def merge_results(run_dir: Path) -> list[FinalEvent]:
-    candidates = {c["candidate_id"]: Candidate(**c) for c in read_json(run_dir / "candidates.json").get("candidates", [])}
-    flash_events = [FlashEvent(**e) for e in read_json(run_dir / "flash_events.json").get("events", [])]
-    pro_events = [FinalEvent(**e) for e in read_json(run_dir / "pro_events.json").get("events", [])]
-    manifest = read_json(run_dir / "frames_manifest.json")
+    packets_payload = read_json(run_dir / "packets.json") if (run_dir / "packets.json").exists() else {"packets": []}
+    packets = packets_payload.get("packets", [])
+    flash_decisions = read_json(run_dir / "flash_decisions.json").get("decisions", []) if (run_dir / "flash_decisions.json").exists() else []
+    pro_decisions = read_json(run_dir / "pro_decisions.json").get("decisions", []) if (run_dir / "pro_decisions.json").exists() else []
 
-    pro_by_type_time = {(e.event_type, round(e.start_time, 1), round(e.end_time, 1)): e for e in pro_events}
+    flash_by_packet = {d.get("packet_id"): d for d in flash_decisions if d.get("packet_id")}
+    pro_by_packet = {d.get("packet_id"): d for d in pro_decisions if d.get("packet_id")}
 
-    merged: list[FinalEvent] = []
-    counter = 1
+    packets_sorted = sorted(packets, key=lambda p: int(p.get("candidate_rank", 10_000)))
 
-    for flash in flash_events:
-        if not flash.is_relevant:
+    final_events: list[FinalEvent] = []
+    trace_entries: list[dict[str, Any]] = []
+    flash_only_counter = 1
+
+    for packet in packets_sorted:
+        packet_id = packet.get("packet_id")
+        local = packet.get("local", {})
+        local_score = float(local.get("local_score", 0.5))
+        anchors = _anchor_paths(packet)
+
+        flash = flash_by_packet.get(packet_id)
+        pro = pro_by_packet.get(packet_id)
+
+        trace = {
+            "packet_id": packet_id,
+            "candidate_id": packet.get("candidate_id"),
+            "local": local,
+            "flash": None,
+            "pro": None,
+            "final_event_id": None,
+            "dropped_reason": None,
+        }
+
+        if flash:
+            trace["flash"] = {
+                "status": flash.get("status"),
+                "latency_ms": flash.get("latency_ms"),
+                "response": flash.get("response"),
+            }
+        if pro:
+            trace["pro"] = {
+                "status": pro.get("status"),
+                "latency_ms": pro.get("latency_ms"),
+                "response": pro.get("response"),
+            }
+
+        if pro and isinstance(pro.get("response"), dict):
+            resp = pro["response"]
+            confidence = float(resp.get("confidence", local_score))
+            blended_conf = round(0.45 * local_score + 0.55 * confidence, 3)
+            risk_val = float(resp.get("risk_score", local_score * 100.0))
+            blended_risk = round(0.4 * (local_score * 100.0) + 0.6 * risk_val, 2)
+
+            event = FinalEvent(
+                event_id=str(resp.get("event_id", f"evt_{packet_id}")),
+                packet_id=packet_id,
+                source_stage="PRO_FINAL",
+                event_type=_event_type_from(resp),
+                start_time=float(resp.get("start_time", packet.get("window_start_s", 0.0))),
+                end_time=float(resp.get("end_time", packet.get("window_end_s", 0.0))),
+                confidence=blended_conf,
+                risk_score=blended_risk,
+                violator_description=str(resp.get("violator_description", "")),
+                plate_text=resp.get("plate_text"),
+                plate_candidates=resp.get("plate_candidates", []),
+                evidence_frames=anchors,
+                report_images=[],
+                evidence_clip_path=resp.get("evidence_clip_path"),
+                key_moments=resp.get("key_moments", []),
+                explanation_short=str(resp.get("explanation_short", "")),
+                uncertain=bool(resp.get("uncertain", False)),
+                uncertainty_reason=resp.get("uncertainty_reason"),
+            )
+            final_events.append(event)
+            trace["final_event_id"] = event.event_id
+            trace_entries.append(trace)
             continue
 
-        key = (flash.event_type, round(flash.start_time, 1), round(flash.end_time, 1))
-        candidate = candidates.get(flash.candidate_id)
-        local_score = candidate.score if candidate else 0.5
-
-        if key in pro_by_type_time:
-            event = pro_by_type_time[key]
-            event.confidence = round(0.45 * local_score + 0.55 * event.confidence, 3)
-            event.risk_score = round(0.4 * (local_score * 100) + 0.6 * event.risk_score, 2)
-            event.evidence_frames = _select_evidence_frames(run_dir, manifest, event.start_time, event.end_time)
-            event.report_images = []
-            merged.append(event)
-            continue
-
-        merged.append(
-            FinalEvent(
-                event_id=f"evt_{counter:03d}",
-                event_type=flash.event_type,
-                start_time=flash.start_time,
-                end_time=flash.end_time,
-                confidence=round(0.45 * local_score + 0.55 * flash.confidence, 3),
-                risk_score=round((local_score * 100) * 0.7, 2),
-                violator_description=flash.violator_description,
+        flash_resp = flash.get("response") if flash else None
+        if isinstance(flash_resp, dict) and bool(flash_resp.get("is_relevant", False)):
+            event = FinalEvent(
+                event_id=f"evt_{flash_only_counter:03d}_{packet_id}",
+                packet_id=packet_id,
+                source_stage="FLASH_ONLY",
+                event_type=_event_type_from(flash_resp),
+                start_time=float(flash_resp.get("start_time", packet.get("window_start_s", 0.0))),
+                end_time=float(flash_resp.get("end_time", packet.get("window_end_s", 0.0))),
+                confidence=round(0.45 * local_score + 0.55 * float(flash_resp.get("confidence", local_score)), 3),
+                risk_score=round((local_score * 100.0) * 0.7, 2),
+                violator_description=str(flash_resp.get("violator_description", "")),
                 plate_text=None,
                 plate_candidates=[],
-                evidence_frames=_select_evidence_frames(run_dir, manifest, flash.start_time, flash.end_time),
+                evidence_frames=anchors,
                 report_images=[],
                 evidence_clip_path=None,
-                key_moments=[{"t": flash.start_time, "note": "Flash-only event"}],
-                explanation_short="Potential event identified by local pipeline and Flash validation.",
+                key_moments=[{"t": float(flash_resp.get("start_time", packet.get("window_start_s", 0.0))), "note": "Flash-only event"}],
+                explanation_short="Potential event identified by local packet and Flash validation.",
                 uncertain=True,
                 uncertainty_reason="Not escalated to Pro",
             )
-        )
-        counter += 1
+            final_events.append(event)
+            flash_only_counter += 1
+            trace["final_event_id"] = event.event_id
+            trace_entries.append(trace)
+            continue
 
-    merged.sort(key=lambda e: e.start_time)
+        reasons = packet.get("routing", {}).get("routing_reason", [])
+        if reasons:
+            trace["dropped_reason"] = reasons[-1]
+        elif flash and isinstance(flash_resp, dict) and not bool(flash_resp.get("is_relevant", False)):
+            trace["dropped_reason"] = "flash_not_relevant"
+        else:
+            trace["dropped_reason"] = "not_processed"
+        trace_entries.append(trace)
 
-    deduped: list[FinalEvent] = []
-    for event in merged:
-        duplicate = False
-        for prior in deduped:
-            if prior.event_type != event.event_type:
-                continue
-            overlap = max(0.0, min(prior.end_time, event.end_time) - max(prior.start_time, event.start_time))
-            shorter = min(prior.end_time - prior.start_time, event.end_time - event.start_time)
-            if shorter > 0 and overlap / shorter > 0.4:
-                duplicate = True
-                if event.confidence > prior.confidence:
-                    deduped.remove(prior)
-                    deduped.append(event)
-                break
-        if not duplicate:
-            deduped.append(event)
+    summary = {
+        "packets_total": len(packets_sorted),
+        "final_events": len(final_events),
+        "dropped_packets": len([t for t in trace_entries if t.get("final_event_id") is None]),
+        "pro_final_events": len([e for e in final_events if e.source_stage == "PRO_FINAL"]),
+        "flash_only_events": len([e for e in final_events if e.source_stage == "FLASH_ONLY"]),
+    }
 
-    write_json(run_dir / "events_final.json", {"events": [e.model_dump() for e in deduped]})
-    return deduped
+    write_json(run_dir / "events_final.json", {"events": [e.model_dump() for e in final_events]})
+    write_json(run_dir / "trace.json", {"summary": summary, "packets": trace_entries})
+    return final_events

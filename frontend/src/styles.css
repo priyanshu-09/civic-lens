@@ -101,6 +101,14 @@ button:disabled {
   border: 1px solid #d1d5db;
 }
 
+.trace-panel {
+  margin: 8px 0 12px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px dashed #94a3b8;
+  background: #f8fafc;
+}
+
 .checkbox {
   display: flex;
   align-items: center;

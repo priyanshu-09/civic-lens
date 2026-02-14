@@ -160,6 +160,17 @@ def get_artifact(run_id: str, path: str):
     return FileResponse(resolved)
 
 
+@app.get("/api/runs/{run_id}/trace")
+def get_trace(run_id: str) -> dict:
+    if not store.exists(run_id):
+        raise HTTPException(status_code=404, detail="run_id not found")
+    run_dir = settings.runs_dir / run_id
+    trace_path = run_dir / "trace.json"
+    if not trace_path.exists():
+        return {"summary": {}, "packets": [], "message": "Trace not available for this run"}
+    return read_json(trace_path)
+
+
 @app.get("/api/runs/{run_id}/export")
 def export(run_id: str):
     run_dir = settings.runs_dir / run_id

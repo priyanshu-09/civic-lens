@@ -34,10 +34,12 @@ class ViolationType(str, Enum):
 
 class Candidate(BaseModel):
     candidate_id: str
+    packet_id: str
     event_type: ViolationType
     start_s: float
     end_s: float
     score: float = Field(ge=0, le=1)
+    anchor_frames: list[dict[str, Any]] = Field(default_factory=list)
     track_ids: list[int] = Field(default_factory=list)
     reason_codes: list[str] = Field(default_factory=list)
     feature_snapshot: dict[str, float] = Field(default_factory=dict)
@@ -45,6 +47,7 @@ class Candidate(BaseModel):
 
 class FlashEvent(BaseModel):
     candidate_id: str
+    packet_id: str
     is_relevant: bool
     event_type: ViolationType
     confidence: float = Field(ge=0, le=1)
@@ -57,6 +60,8 @@ class FlashEvent(BaseModel):
 
 class FinalEvent(BaseModel):
     event_id: str
+    packet_id: str
+    source_stage: str
     event_type: ViolationType
     start_time: float
     end_time: float

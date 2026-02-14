@@ -12,6 +12,7 @@ from backend.gemini.client import GeminiClient
 from backend.logging_utils.json_logger import RunLogger
 from backend.models.types import RunState, RunStatus, Stage
 from backend.pipeline.store import RunStore
+from backend.utils.io import read_json
 
 
 def _set_status(
@@ -56,10 +57,16 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
     perf_config = load_perf_config(Path("backend/config/perf_config.json"))
     timings: dict[str, int] = {}
     metrics: dict[str, Any] = {
-        "candidate_total": 0,
+        "packets_total": 0,
+        "packets_sent_flash": 0,
+        "packets_sent_pro": 0,
+        "packets_finalized": 0,
+        "packets_dropped": 0,
         "flash_done": 0,
-        "pro_queued": 0,
         "pro_done": 0,
+        "pro_queued": 0,
+        "flash_errors": 0,
+        "pro_errors": 0,
         "flash_concurrency": int(perf_config["gemini_flash_concurrency"]),
         "pro_concurrency": int(perf_config["gemini_pro_concurrency"]),
     }
@@ -164,6 +171,12 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
         t3 = time.perf_counter()
         merge_results(run_dir=run_dir)
         timings[Stage.POSTPROCESS.value] = int((time.perf_counter() - t3) * 1000)
+        trace_path = run_dir / "trace.json"
+        if trace_path.exists():
+            summary = read_json(trace_path).get("summary", {})
+            metrics["packets_total"] = int(summary.get("packets_total", metrics.get("packets_total", 0)))
+            metrics["packets_finalized"] = int(summary.get("final_events", metrics.get("packets_finalized", 0)))
+            metrics["packets_dropped"] = int(summary.get("dropped_packets", metrics.get("packets_dropped", 0)))
 
         _set_status(
             store,

@@ -53,6 +53,29 @@ def _group_runs(indices: list[int], k_required: int) -> list[tuple[int, int]]:
     return runs
 
 
+def _to_run_relative_frame_path(frame_path: str) -> str:
+    return str(Path("frames") / Path(frame_path).name)
+
+
+def _select_anchor_frames(frames: list[dict[str, Any]], start_i: int, end_i: int) -> list[dict[str, Any]]:
+    window = frames[start_i : end_i + 1]
+    if not window:
+        return []
+    if len(window) <= 3:
+        picks = window
+    else:
+        mid = len(window) // 2
+        picks = [window[0], window[mid], window[-1]]
+    return [
+        {
+            "frame_idx": int(p["frame_idx"]),
+            "ts_sec": float(p["ts_sec"]),
+            "path": _to_run_relative_frame_path(str(p["path"])),
+        }
+        for p in picks
+    ]
+
+
 def run_local_proposals(
     run_id: str,
     run_dir: Path,
@@ -152,7 +175,8 @@ def run_local_proposals(
         if reckless_score >= cfg["risk_threshold"]:
             reckless_hits.append(i)
 
-        central = fg[int(h * 0.3) : int(h * 0.8), int(w * 0.3) : int(w * 0.7)]
+        fh, fw = fg.shape[:2]
+        central = fg[int(fh * 0.3) : int(fh * 0.8), int(fw * 0.3) : int(fw * 0.7)]
         central_ratio = float(np.count_nonzero(central) / central.size) if central.size else 0.0
         if central_ratio > 0.2 and motion_score > (cfg["motion_threshold"] * 0.6):
             helmet_hits.append(i)
@@ -167,6 +191,7 @@ def run_local_proposals(
         prev_gray = gray
 
     candidates: list[Candidate] = []
+    packets: list[dict[str, Any]] = []
     cid = 1
 
     def add_candidates(event_type: ViolationType, runs: list[tuple[int, int]], reason_codes: list[str], score_hint: float) -> None:
@@ -177,17 +202,43 @@ def run_local_proposals(
             peak_i = min(max((start_i + end_i) // 2, 0), len(frames) - 1)
             snap = feature_snapshots.get(peak_i, {})
             score = min(1.0, max(0.0, score_hint + float(snap.get("reckless_score", 0.0)) * 0.25))
+            packet_id = f"pkt_{cid:03d}"
+            anchors = _select_anchor_frames(frames, start_i, end_i)
             candidates.append(
                 Candidate(
                     candidate_id=f"cand_{cid:03d}",
+                    packet_id=packet_id,
                     event_type=event_type,
                     start_s=round(start_ts, 3),
                     end_s=round(end_ts, 3),
                     score=round(score, 3),
+                    anchor_frames=anchors,
                     track_ids=[],
                     reason_codes=reason_codes,
                     feature_snapshot=snap,
                 )
+            )
+            packets.append(
+                {
+                    "packet_id": packet_id,
+                    "candidate_id": f"cand_{cid:03d}",
+                    "run_id": run_id,
+                    "candidate_rank": 0,
+                    "window_start_s": round(start_ts, 3),
+                    "window_end_s": round(end_ts, 3),
+                    "anchor_frames": anchors,
+                    "local": {
+                        "proposed_event_type": event_type.value,
+                        "local_score": round(score, 3),
+                        "reason_codes": reason_codes,
+                        "feature_snapshot": snap,
+                    },
+                    "routing": {
+                        "sent_to_flash": False,
+                        "sent_to_pro": False,
+                        "routing_reason": [],
+                    },
+                }
             )
             cid += 1
 
@@ -220,6 +271,7 @@ def run_local_proposals(
 
     per_type_counts: dict[ViolationType, int] = defaultdict(int)
     pruned: list[Candidate] = []
+    pruned_packet_ids: list[str] = []
     for cand in candidates:
         if len(pruned) >= int(cfg["max_candidates_total"]):
             break
@@ -238,9 +290,18 @@ def run_local_proposals(
         if keep:
             pruned.append(cand)
             per_type_counts[cand.event_type] += 1
+            pruned_packet_ids.append(cand.packet_id)
 
     payload = {"run_id": run_id, "candidates": [c.model_dump() for c in pruned]}
+    packet_map = {p["packet_id"]: p for p in packets}
+    pruned_packets: list[dict[str, Any]] = []
+    for rank, packet_id in enumerate(pruned_packet_ids, start=1):
+        packet = packet_map[packet_id]
+        packet["candidate_rank"] = rank
+        pruned_packets.append(packet)
+
     write_json(run_dir / "candidates.json", payload)
+    write_json(run_dir / "packets.json", {"run_id": run_id, "packets": pruned_packets})
 
     elapsed = int((time.perf_counter() - started) * 1000)
     logger.log(

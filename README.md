@@ -9,6 +9,7 @@ Civic Lens is a local-first PoC for detecting traffic violations in dashcam vide
 - Apply speed caps and concurrent Gemini routing via `backend/config/perf_config.json`
 - Review events manually (accept/reject, notes, include plate)
 - Export a case pack ZIP with logs, JSON artifacts, report, and incident thumbnails
+- Inspect full packet lineage (`local -> flash -> pro -> final`) via run trace
 
 ## Violation types in this build
 - `NO_HELMET`
@@ -71,7 +72,15 @@ Or set in shell before starting backend:
 
 ## Performance tuning
 - Edit `backend/config/perf_config.json` to tune:
+  - mode (`pipeline_mode`: `fast`, `balanced`, `high_recall`)
   - candidate caps (`gemini_flash_max_candidates`, `gemini_pro_max_candidates`)
   - concurrency (`gemini_flash_concurrency`, `gemini_pro_concurrency`)
   - timeouts/retries
   - adaptive ingest FPS and local downscale
+
+## Transparency artifacts
+Each run now includes:
+- `packets.json` (local packet proposals with anchor frames)
+- `flash_decisions.json` (what each packet got from Flash)
+- `pro_decisions.json` (what escalated packets got from Pro)
+- `trace.json` (packet-level lineage and drop reasons)

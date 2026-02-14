@@ -1,6 +1,7 @@
 FLASH_SCHEMA = {
     "type": "object",
     "properties": {
+        "packet_id": {"type": "string"},
         "candidate_id": {"type": "string"},
         "is_relevant": {"type": "boolean"},
         "event_type": {
@@ -15,6 +16,7 @@ FLASH_SCHEMA = {
         "needs_pro": {"type": "boolean"},
     },
     "required": [
+        "packet_id",
         "candidate_id",
         "is_relevant",
         "event_type",
@@ -30,6 +32,7 @@ FLASH_SCHEMA = {
 PRO_SCHEMA = {
     "type": "object",
     "properties": {
+        "packet_id": {"type": "string"},
         "event_id": {"type": "string"},
         "event_type": {
             "type": "string",
@@ -58,6 +61,7 @@ PRO_SCHEMA = {
         "uncertainty_reason": {"type": ["string", "null"]},
     },
     "required": [
+        "packet_id",
         "event_id",
         "event_type",
         "confidence",
