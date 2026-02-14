@@ -10,4 +10,10 @@ if [ ! -d .venv ]; then
 fi
 
 source .venv/bin/activate
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
 exec uvicorn backend.api.main:app --reload --port 8000
