@@ -14,13 +14,6 @@ from backend.models.types import Candidate, FlashEvent, FinalEvent
 from backend.utils.io import read_json, write_json
 
 
-MODE_PRESETS = {
-    "fast": {"gemini_flash_max_candidates": 4, "gemini_pro_max_candidates": 2},
-    "balanced": {"gemini_flash_max_candidates": 6, "gemini_pro_max_candidates": 3},
-    "high_recall": {"gemini_flash_max_candidates": 12, "gemini_pro_max_candidates": 6},
-}
-
-
 class GeminiClient:
     def __init__(self, api_key: Optional[str], flash_model: str, pro_model: str, logger: RunLogger) -> None:
         self.api_key = api_key
@@ -38,6 +31,12 @@ class GeminiClient:
                 self._types = types
             except Exception as exc:  # pragma: no cover - import path variability
                 self.logger.log("GEMINI_FLASH", "ERROR", "gemini_init_error", "Gemini SDK init failed", error_detail=str(exc))
+
+    @staticmethod
+    def _add_reason(routing: dict[str, Any], reason: str) -> None:
+        reasons = routing.setdefault("routing_reason", [])
+        if reason not in reasons:
+            reasons.append(reason)
 
     def _upload_video(self, video_path: Path) -> Any:
         if not self._client:
@@ -102,10 +101,20 @@ class GeminiClient:
         if isinstance(parsed, dict):
             return parsed, latency
 
-        text = response.text or "{}"
-        return json.loads(text), latency
+        text_parts: list[str] = []
+        for candidate in getattr(response, "candidates", []) or []:
+            content = getattr(candidate, "content", None)
+            for part in getattr(content, "parts", []) or []:
+                txt = getattr(part, "text", None)
+                if isinstance(txt, str) and txt.strip():
+                    text_parts.append(txt)
+
+        raw_text = "\n".join(text_parts).strip() or "{}"
+        return json.loads(raw_text), latency
 
     def _flash_fallback(self, candidate: Candidate) -> FlashEvent:
+        uncertain = candidate.score < 0.82
+        reason = "Fallback output due to unavailable/failed Flash inference." if uncertain else None
         return FlashEvent(
             packet_id=candidate.packet_id,
             candidate_id=candidate.candidate_id,
@@ -115,8 +124,13 @@ class GeminiClient:
             start_time=candidate.start_s,
             end_time=candidate.end_s,
             plate_visible=False,
+            plate_text=None,
+            plate_candidates=[],
+            plate_confidence=None,
             violator_description="Vehicle detected in candidate window",
-            needs_pro=candidate.score >= 0.7,
+            uncertain=uncertain,
+            uncertainty_reason=reason,
+            needs_pro=uncertain and candidate.score >= 0.55,
         )
 
     def _pro_fallback(self, idx: int, candidate: Candidate, flash_event: FlashEvent, reason: str) -> FinalEvent:
@@ -131,8 +145,9 @@ class GeminiClient:
             end_time=flash_event.end_time,
             key_moments=[{"t": flash_event.start_time, "note": "Candidate activity starts"}],
             violator_description=flash_event.violator_description,
-            plate_text=None,
-            plate_candidates=[],
+            plate_text=flash_event.plate_text,
+            plate_candidates=flash_event.plate_candidates,
+            plate_confidence=flash_event.plate_confidence,
             explanation_short="Potential violation detected in candidate window. Manual review required.",
             uncertain=True,
             uncertainty_reason=reason,
@@ -142,24 +157,25 @@ class GeminiClient:
         )
 
     def _resolve_mode_config(self, perf_config: dict[str, Any]) -> dict[str, Any]:
-        mode = str(perf_config.get("pipeline_mode", "balanced"))
         cfg = dict(perf_config)
-        preset = MODE_PRESETS.get(mode)
-        if preset:
-            cfg.update(preset)
-        cfg["pipeline_mode"] = mode
+        cfg["pipeline_mode"] = str(cfg.get("pipeline_mode", "balanced"))
         return cfg
 
-    def _select_flash_candidates(self, candidates: list[Candidate], flash_limit: int) -> list[Candidate]:
+    def _select_flash_candidates(self, candidates: list[Candidate], flash_limit: int, min_local_score: float) -> list[Candidate]:
         if not candidates:
             return []
         by_score = sorted(candidates, key=lambda c: c.score, reverse=True)
+        eligible = [c for c in by_score if c.score >= min_local_score]
+        if not eligible and by_score:
+            # Always process at least one packet so the run is inspectable.
+            eligible = [by_score[0]]
+
         selected: list[Candidate] = []
         selected_ids: set[str] = set()
 
-        # Ensure at least top packet per local type when possible.
+        # Diversity-first seed from eligible packets.
         top_per_type: dict[str, Candidate] = {}
-        for cand in by_score:
+        for cand in eligible:
             t = cand.event_type.value
             if t not in top_per_type:
                 top_per_type[t] = cand
@@ -171,7 +187,7 @@ class GeminiClient:
             selected.append(cand)
             selected_ids.add(cand.packet_id)
 
-        for cand in by_score:
+        for cand in eligible:
             if len(selected) >= flash_limit:
                 break
             if cand.packet_id in selected_ids:
@@ -201,15 +217,18 @@ class GeminiClient:
 
         packet_by_id = {p.get("packet_id"): p for p in packets}
 
-        flash_limit = int(resolved_perf.get("gemini_flash_max_candidates", 6))
-        pro_limit = int(resolved_perf.get("gemini_pro_max_candidates", 3))
+        flash_limit = int(resolved_perf.get("gemini_flash_max_candidates", 14))
+        pro_limit = int(resolved_perf.get("gemini_pro_max_candidates", 8))
         flash_concurrency = int(resolved_perf.get("gemini_flash_concurrency", 4))
         pro_concurrency = int(resolved_perf.get("gemini_pro_concurrency", 2))
         flash_timeout = int(resolved_perf.get("gemini_flash_timeout_sec", 30))
         pro_timeout = int(resolved_perf.get("gemini_pro_timeout_sec", 45))
         retry_attempts = int(resolved_perf.get("gemini_retry_attempts", 1))
+        flash_min_local_score = float(resolved_perf.get("flash_min_local_score", 0.5))
+        pro_uncertain_low = float(resolved_perf.get("pro_uncertain_conf_low", 0.45))
+        pro_uncertain_high = float(resolved_perf.get("pro_uncertain_conf_high", 0.82))
 
-        candidates = self._select_flash_candidates(raw_candidates, flash_limit)
+        candidates = self._select_flash_candidates(raw_candidates, flash_limit, flash_min_local_score)
         selected_packet_ids = {c.packet_id for c in candidates}
 
         metrics: dict[str, Any] = {
@@ -225,21 +244,37 @@ class GeminiClient:
             "pro_errors": 0,
             "flash_concurrency": flash_concurrency,
             "pro_concurrency": pro_concurrency,
-            "candidate_total": len(candidates),
+            "candidate_total": len(raw_candidates),
             "pro_queued": 0,
+            "flash_min_local_score": flash_min_local_score,
+            "pro_uncertain_conf_low": pro_uncertain_low,
+            "pro_uncertain_conf_high": pro_uncertain_high,
+            "flash_uncertain": 0,
+            "flash_relevant": 0,
         }
 
-        # Initialize routing reasons for non-selected packets.
         for cand in raw_candidates:
             pkt = packet_by_id.get(cand.packet_id)
             if not pkt:
                 continue
             routing = pkt.setdefault("routing", {})
-            routing.setdefault("routing_reason", [])
+            routing["routing_reason"] = []
             routing["sent_to_flash"] = cand.packet_id in selected_packet_ids
             routing["sent_to_pro"] = False
             if cand.packet_id not in selected_packet_ids:
-                routing["routing_reason"].append("not_in_flash_top_k")
+                if cand.score < flash_min_local_score:
+                    self._add_reason(routing, "local_score_below_flash_threshold")
+                else:
+                    self._add_reason(routing, "flash_k_limit")
+                self.logger.log(
+                    "GEMINI_FLASH",
+                    "INFO",
+                    "packet_routing",
+                    "Packet skipped before Flash",
+                    packet_id=cand.packet_id,
+                    local_score=cand.score,
+                    reasons=routing.get("routing_reason", []),
+                )
 
         flash_started = time.perf_counter()
         file_ref = None
@@ -276,10 +311,15 @@ class GeminiClient:
 
         def run_flash(candidate: Candidate, order_idx: int) -> tuple[int, Candidate, FlashEvent, dict[str, Any]]:
             prompt = (
-                "You are validating Indian traffic incidents. Return strict JSON. "
+                "You are validating Indian traffic incidents in a short video window. Return strict JSON only. "
                 f"Use packet_id exactly as provided: {candidate.packet_id}. "
                 f"Candidate id is {candidate.candidate_id}. "
-                "If weak evidence, set is_relevant=false."
+                f"Local proposal type={candidate.event_type.value}, local_score={candidate.score:.3f}. "
+                "Set is_relevant=true only when direct visual evidence of a traffic violation exists in this window. "
+                "For plate extraction: set plate_visible, plate_text (uppercase, no spaces/hyphens where possible), "
+                "plate_candidates (alternative reads), and plate_confidence (0-1, null if not readable). "
+                "Set uncertain=true only if evidence is ambiguous/partial/occluded; include short uncertainty_reason. "
+                "If weak evidence, set is_relevant=false and uncertain=false."
             )
             decision = {
                 "packet_id": candidate.packet_id,
@@ -348,6 +388,12 @@ class GeminiClient:
             payload["packet_id"] = candidate.packet_id
             try:
                 event = FlashEvent(**payload)
+                uncertain_band = pro_uncertain_low <= event.confidence < pro_uncertain_high
+                should_escalate = event.is_relevant and (event.uncertain or uncertain_band)
+                reason = event.uncertainty_reason
+                if should_escalate and not reason:
+                    reason = "Flash confidence in uncertain band"
+                event = event.model_copy(update={"uncertain": should_escalate, "uncertainty_reason": reason, "needs_pro": should_escalate})
                 decision["status"] = "ok"
                 decision["latency_ms"] = latency_ms
                 decision["response"] = event.model_dump()
@@ -371,6 +417,7 @@ class GeminiClient:
                     packet_id=candidate.packet_id,
                     packet_index=idx + 1,
                     packet_total=len(candidates),
+                    local_score=candidate.score,
                 )
                 fut = executor.submit(run_flash, candidate, idx)
                 futures[fut] = candidate.packet_id
@@ -383,6 +430,10 @@ class GeminiClient:
                 flash_events.append(flash_event)
                 flash_decisions.append(decision)
                 metrics["flash_done"] = done_idx
+                if flash_event.is_relevant:
+                    metrics["flash_relevant"] += 1
+                if flash_event.uncertain:
+                    metrics["flash_uncertain"] += 1
                 self.logger.log(
                     "GEMINI_FLASH",
                     "INFO",
@@ -391,6 +442,7 @@ class GeminiClient:
                     packet_id=candidate.packet_id,
                     confidence=flash_event.confidence,
                     relevant=flash_event.is_relevant,
+                    uncertain=flash_event.uncertain,
                     status=decision["status"],
                 )
                 if progress_cb:
@@ -400,41 +452,52 @@ class GeminiClient:
         flash_elapsed = int((time.perf_counter() - flash_started) * 1000)
 
         flash_results.sort(key=lambda x: x[0])
-        top_packet_id = flash_results[0][1].packet_id if flash_results else None
 
         pro_queue: list[tuple[float, int, Candidate, FlashEvent, list[str]]] = []
         for order_idx, candidate, flash_event, decision in flash_results:
             pkt = packet_by_id.get(candidate.packet_id)
             routing = pkt.setdefault("routing", {}) if pkt else {}
-            reasons = []
+            reasons: list[str] = []
 
             if not flash_event.is_relevant:
-                reasons.append("flash_not_relevant")
-                routing.setdefault("routing_reason", []).append("flash_not_relevant")
+                self._add_reason(routing, "flash_not_relevant")
+                self.logger.log(
+                    "GEMINI_FLASH",
+                    "INFO",
+                    "packet_routing",
+                    "Flash marked packet non-relevant; skipping Pro",
+                    packet_id=candidate.packet_id,
+                    reasons=routing.get("routing_reason", []),
+                )
                 continue
 
-            local_type = candidate.event_type.value
-            severe = flash_event.event_type.value in {"RED_LIGHT_JUMP", "WRONG_SIDE_DRIVING"}
-            ambiguous = 0.45 <= flash_event.confidence <= 0.8
-            top_risk = candidate.packet_id == top_packet_id
-            disagreement = local_type != flash_event.event_type.value
+            uncertain = False
+            if flash_event.uncertain:
+                uncertain = True
+                reasons.append("flash_marked_uncertain")
 
-            if severe:
-                reasons.append("severe_event_type")
-            if ambiguous:
-                reasons.append("flash_confidence_ambiguous")
-            if flash_event.plate_visible:
-                reasons.append("plate_visible")
-            if top_risk:
-                reasons.append("top_local_risk")
-            if disagreement:
-                reasons.append("local_flash_disagreement")
+            if pro_uncertain_low <= flash_event.confidence < pro_uncertain_high:
+                uncertain = True
+                reasons.append("flash_confidence_uncertain_band")
 
-            if not reasons:
-                routing.setdefault("routing_reason", []).append("did_not_meet_pro_policy")
+            if decision.get("status") != "ok":
+                uncertain = True
+                reasons.append("flash_fallback_output")
+
+            if not uncertain:
+                self._add_reason(routing, "flash_confident_no_pro")
+                self.logger.log(
+                    "GEMINI_FLASH",
+                    "INFO",
+                    "packet_routing",
+                    "Flash confident; not escalated to Pro",
+                    packet_id=candidate.packet_id,
+                    flash_confidence=flash_event.confidence,
+                    reasons=routing.get("routing_reason", []),
+                )
                 continue
 
-            priority = candidate.score + (0.35 if severe else 0.0) + (0.2 if flash_event.plate_visible else 0.0) + (0.1 if ambiguous else 0.0)
+            priority = (1.0 - flash_event.confidence) + (candidate.score * 0.5) + (0.1 if flash_event.plate_visible else 0.0)
             pro_queue.append((priority, order_idx, candidate, flash_event, reasons))
 
         pro_queue.sort(key=lambda x: x[0], reverse=True)
@@ -443,18 +506,33 @@ class GeminiClient:
         metrics["pro_queued"] = len(queued)
         metrics["packets_sent_pro"] = len(queued)
 
-        # mark non-selected pro-eligible packets with cap reason
-        for priority, order_idx, candidate, flash_event, reasons in pro_queue:
+        for _priority, _order_idx, candidate, _flash_event, reasons in pro_queue:
             pkt = packet_by_id.get(candidate.packet_id)
             if not pkt:
                 continue
             routing = pkt.setdefault("routing", {})
-            routing.setdefault("routing_reason", [])
             if candidate.packet_id in queued_ids:
                 routing["sent_to_pro"] = True
-                routing["routing_reason"].extend(reasons)
+                for reason in reasons:
+                    self._add_reason(routing, reason)
+                self.logger.log(
+                    "GEMINI_PRO",
+                    "INFO",
+                    "packet_routing",
+                    "Packet queued for Pro",
+                    packet_id=candidate.packet_id,
+                    reasons=routing.get("routing_reason", []),
+                )
             else:
-                routing["routing_reason"].append("pro_k_limit")
+                self._add_reason(routing, "pro_k_limit")
+                self.logger.log(
+                    "GEMINI_PRO",
+                    "INFO",
+                    "packet_routing",
+                    "Packet eligible for Pro but skipped due cap",
+                    packet_id=candidate.packet_id,
+                    reasons=routing.get("routing_reason", []),
+                )
 
         self.logger.log(
             "GEMINI_FLASH",
@@ -492,10 +570,14 @@ class GeminiClient:
                 return queue_idx, event, decision
 
             prompt = (
-                "You are producing an evidence-only traffic violation record. "
+                "You are the second-pass validator for uncertain Indian traffic incidents. Return strict JSON only. "
                 f"Use packet_id exactly as provided: {candidate.packet_id}. "
-                "If plate is unreadable, return plate_text as null. "
-                "If uncertain set uncertain true with reason."
+                f"Local proposal type={candidate.event_type.value}, local_score={candidate.score:.3f}. "
+                f"Flash summary: relevant={flash_event.is_relevant}, event_type={flash_event.event_type.value}, "
+                f"confidence={flash_event.confidence:.3f}, uncertain={flash_event.uncertain}. "
+                "If plate is unreadable, return plate_text=null and plate_confidence=null. "
+                "Return plate_candidates with best alternates when possible. "
+                "Set uncertain=true only if evidence remains ambiguous and provide uncertainty_reason."
             )
 
             fps = 4 if candidate.event_type.value == "RECKLESS_DRIVING" else 2
@@ -559,6 +641,7 @@ class GeminiClient:
                     violator_description=payload["violator_description"],
                     plate_text=payload.get("plate_text"),
                     plate_candidates=payload.get("plate_candidates", []),
+                    plate_confidence=payload.get("plate_confidence"),
                     key_moments=payload.get("key_moments", []),
                     explanation_short=payload["explanation_short"],
                     uncertain=payload.get("uncertain", False),
@@ -582,7 +665,7 @@ class GeminiClient:
         if queued:
             with ThreadPoolExecutor(max_workers=max(1, pro_concurrency)) as executor:
                 futures = {}
-                for queue_idx, (_priority, order_idx, candidate, flash_event, reasons) in enumerate(queued):
+                for queue_idx, (_priority, order_idx, candidate, flash_event, _reasons) in enumerate(queued):
                     self.logger.log(
                         "GEMINI_PRO",
                         "INFO",
@@ -618,7 +701,6 @@ class GeminiClient:
                 ordered.sort(key=lambda x: x[0])
                 pro_events = [row[1] for row in ordered]
 
-        # update packet routing and write packet artifact back with traceability fields
         flash_by_packet = {f.packet_id: f for f in flash_events}
         pro_by_packet = {p.packet_id: p for p in pro_events}
         finalized = 0
@@ -638,7 +720,7 @@ class GeminiClient:
             else:
                 dropped += 1
                 if cand.packet_id in flash_by_packet and not flash_by_packet[cand.packet_id].is_relevant:
-                    routing["routing_reason"].append("flash_not_relevant")
+                    self._add_reason(routing, "flash_not_relevant")
 
         metrics["packets_finalized"] = finalized
         metrics["packets_dropped"] = dropped

@@ -26,6 +26,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
   - `INGEST`
   - `LOCAL_PROPOSALS`
   - `GEMINI_FLASH`
+  - `GEMINI_PRO`
   - `POSTPROCESS`
   - `READY_FOR_REVIEW`
   - `EXPORT` (on demand)
@@ -40,13 +41,17 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 
 6. Gemini Analyzer (`backend/gemini/client.py`)
 - Uploads full video once via Files API (when key available).
-- Runs Flash on top-K candidates (capped), Pro on routed subset (capped).
+- Routes packets with explicit policy:
+  - Local packet must clear `flash_min_local_score` (or top-1 fallback) to reach Flash.
+  - Pro is called only for Flash-uncertain packets (model uncertainty flag or confidence in configured uncertain band).
+  - Flash/Pro counts are dynamic and capped by `gemini_flash_max_candidates` / `gemini_pro_max_candidates`.
 - Executes Flash and Pro calls concurrently with configurable worker limits.
 - Falls back to deterministic placeholder outputs if API unavailable/fails.
 - Writes `flash_events.json` and `pro_events.json`.
 - Writes packet-linked decision artifacts:
   - `flash_decisions.json`
   - `pro_decisions.json`
+- Flash and Pro both extract number plate fields (`plate_text`, `plate_candidates`, `plate_confidence`).
 
 7. Postprocess (`backend/postprocess/merge.py`)
 - Merges Flash/Pro outputs, blends local and model confidence, selects evidence frames.
@@ -99,7 +104,8 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - returns stage/state/progress/failure metadata plus `stage_message` and live `metrics` (flash/pro counters)
 
 4. `GET /api/runs/{run_id}/events`
-- returns final merged events
+- returns final merged events when ready
+- while pipeline is running, returns provisional live events (`provisional: true`) built from packet/Flash/Pro artifacts
 
 5. `POST /api/runs/{run_id}/events/{event_id}/review`
 - body: `{ decision, reviewer_notes, include_plate }`
@@ -112,6 +118,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 
 8. `GET /api/runs/{run_id}/trace`
 - returns lineage trace per packet for transparency/debugging
+- while postprocess output is absent, returns provisional live trace from packets + Flash/Pro decisions
 
 9. `GET /api/runs/{run_id}/export`
 - returns zip case pack

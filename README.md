@@ -6,10 +6,12 @@ Civic Lens is a local-first PoC for detecting traffic violations in dashcam vide
 - Upload a video from UI
 - Run local proposal engine to find candidate violation windows
 - Verify and enrich candidates using Gemini (Flash -> Pro) when API key is available
-- Apply speed caps and concurrent Gemini routing via `backend/config/perf_config.json`
+- Route dynamically: local packets -> Flash, only uncertain Flash packets -> Pro
+- Apply max caps and concurrent Gemini routing via `backend/config/perf_config.json`
 - Review events manually (accept/reject, notes, include plate)
 - Export a case pack ZIP with logs, JSON artifacts, report, and incident thumbnails
 - Inspect full packet lineage (`local -> flash -> pro -> final`) via run trace
+- See live packet/event updates in Review screen while pipeline is still running
 
 ## Violation types in this build
 - `NO_HELMET`
@@ -72,11 +74,18 @@ Or set in shell before starting backend:
 
 ## Performance tuning
 - Edit `backend/config/perf_config.json` to tune:
-  - mode (`pipeline_mode`: `fast`, `balanced`, `high_recall`)
-  - candidate caps (`gemini_flash_max_candidates`, `gemini_pro_max_candidates`)
+  - max candidate caps (`gemini_flash_max_candidates`, `gemini_pro_max_candidates`)
+  - local-to-Flash threshold (`flash_min_local_score`)
+  - uncertainty band for Flash->Pro escalation (`pro_uncertain_conf_low`, `pro_uncertain_conf_high`)
   - concurrency (`gemini_flash_concurrency`, `gemini_pro_concurrency`)
   - timeouts/retries
   - adaptive ingest FPS and local downscale
+
+Routing policy in this build:
+1. Local engine creates packets.
+2. Only packets above `flash_min_local_score` (or top one fallback) are sent to Flash.
+3. Pro is called only when Flash marks a packet uncertain or confidence lies in the configured uncertain band.
+4. Both Flash and Pro are prompted to extract number plate text/candidates/confidence.
 
 ## Transparency artifacts
 Each run now includes:

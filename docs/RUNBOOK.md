@@ -13,9 +13,10 @@
 2. Upload a video.
 3. Optionally edit ROI JSON in UI.
 4. Click `Analyze`.
-5. Wait for status to reach `READY_FOR_REVIEW`.
-6. Review events and save decisions.
-7. Export case pack ZIP.
+5. You can open `Review` during runtime to see live packet/event updates.
+6. Wait for status to reach `READY_FOR_REVIEW` for final merged output.
+7. Review events and save decisions.
+8. Export case pack ZIP.
 
 ## Troubleshooting
 1. No events detected:

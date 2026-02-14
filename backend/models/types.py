@@ -54,7 +54,12 @@ class FlashEvent(BaseModel):
     start_time: float
     end_time: float
     plate_visible: bool = False
+    plate_text: Optional[str] = None
+    plate_candidates: list[str] = Field(default_factory=list)
+    plate_confidence: Optional[float] = Field(default=None, ge=0, le=1)
     violator_description: str = ""
+    uncertain: bool = False
+    uncertainty_reason: Optional[str] = None
     needs_pro: bool = False
 
 
@@ -70,6 +75,7 @@ class FinalEvent(BaseModel):
     violator_description: str
     plate_text: Optional[str] = None
     plate_candidates: list[str] = Field(default_factory=list)
+    plate_confidence: Optional[float] = Field(default=None, ge=0, le=1)
     evidence_frames: list[str] = Field(default_factory=list)
     report_images: list[str] = Field(default_factory=list)
     evidence_clip_path: Optional[str] = None

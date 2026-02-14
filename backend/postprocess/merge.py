@@ -48,7 +48,9 @@ def merge_results(run_dir: Path) -> list[FinalEvent]:
         trace = {
             "packet_id": packet_id,
             "candidate_id": packet.get("candidate_id"),
+            "anchor_frames": packet.get("anchor_frames", []),
             "local": local,
+            "routing": packet.get("routing", {}),
             "flash": None,
             "pro": None,
             "final_event_id": None,
@@ -87,6 +89,7 @@ def merge_results(run_dir: Path) -> list[FinalEvent]:
                 violator_description=str(resp.get("violator_description", "")),
                 plate_text=resp.get("plate_text"),
                 plate_candidates=resp.get("plate_candidates", []),
+                plate_confidence=resp.get("plate_confidence"),
                 evidence_frames=anchors,
                 report_images=[],
                 evidence_clip_path=resp.get("evidence_clip_path"),
@@ -112,15 +115,16 @@ def merge_results(run_dir: Path) -> list[FinalEvent]:
                 confidence=round(0.45 * local_score + 0.55 * float(flash_resp.get("confidence", local_score)), 3),
                 risk_score=round((local_score * 100.0) * 0.7, 2),
                 violator_description=str(flash_resp.get("violator_description", "")),
-                plate_text=None,
-                plate_candidates=[],
+                plate_text=flash_resp.get("plate_text"),
+                plate_candidates=flash_resp.get("plate_candidates", []),
+                plate_confidence=flash_resp.get("plate_confidence"),
                 evidence_frames=anchors,
                 report_images=[],
                 evidence_clip_path=None,
                 key_moments=[{"t": float(flash_resp.get("start_time", packet.get("window_start_s", 0.0))), "note": "Flash-only event"}],
                 explanation_short="Potential event identified by local packet and Flash validation.",
-                uncertain=True,
-                uncertainty_reason="Not escalated to Pro",
+                uncertain=bool(flash_resp.get("uncertain", True)),
+                uncertainty_reason=flash_resp.get("uncertainty_reason", "Not escalated to Pro"),
             )
             final_events.append(event)
             flash_only_counter += 1
