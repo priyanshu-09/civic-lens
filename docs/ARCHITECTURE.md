@@ -80,7 +80,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - starts async pipeline
 
 3. `GET /api/runs/{run_id}/status`
-- returns stage/state/progress/failure metadata
+- returns stage/state/progress/failure metadata plus `stage_message` for in-stage progress detail
 
 4. `GET /api/runs/{run_id}/events`
 - returns final merged events

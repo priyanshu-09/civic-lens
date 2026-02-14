@@ -20,6 +20,7 @@ def _set_status(
     stage: Stage,
     progress: int,
     timings: dict[str, int],
+    stage_message: Optional[str] = None,
     error: Optional[str] = None,
     failed_stage: Optional[Stage] = None,
 ) -> None:
@@ -31,6 +32,7 @@ def _set_status(
             state=state,
             stage=stage,
             progress_pct=progress,
+            stage_message=stage_message,
             failed_stage=failed_stage,
             error_message=error,
             timings_ms=timings,
@@ -50,7 +52,15 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
     timings: dict[str, int] = {}
 
     try:
-        _set_status(store, run_id, state=RunState.RUNNING, stage=Stage.INGEST, progress=5, timings=timings)
+        _set_status(
+            store,
+            run_id,
+            state=RunState.RUNNING,
+            stage=Stage.INGEST,
+            progress=5,
+            timings=timings,
+            stage_message="Preparing ingest",
+        )
 
         t0 = time.perf_counter()
         manifest = ingest_video(
@@ -61,7 +71,15 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
         )
         timings[Stage.INGEST.value] = int((time.perf_counter() - t0) * 1000)
 
-        _set_status(store, run_id, state=RunState.RUNNING, stage=Stage.LOCAL_PROPOSALS, progress=30, timings=timings)
+        _set_status(
+            store,
+            run_id,
+            state=RunState.RUNNING,
+            stage=Stage.LOCAL_PROPOSALS,
+            progress=30,
+            timings=timings,
+            stage_message="Running local proposal heuristics",
+        )
         t1 = time.perf_counter()
         run_local_proposals(
             run_id=run_id,
@@ -72,7 +90,15 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
         )
         timings[Stage.LOCAL_PROPOSALS.value] = int((time.perf_counter() - t1) * 1000)
 
-        _set_status(store, run_id, state=RunState.RUNNING, stage=Stage.GEMINI_FLASH, progress=55, timings=timings)
+        _set_status(
+            store,
+            run_id,
+            state=RunState.RUNNING,
+            stage=Stage.GEMINI_FLASH,
+            progress=55,
+            timings=timings,
+            stage_message="Initializing Gemini analysis",
+        )
         t2 = time.perf_counter()
         gemini = GeminiClient(
             api_key=settings.gemini_api_key,
@@ -80,15 +106,49 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             pro_model=settings.pro_model,
             logger=logger,
         )
-        gemini.analyze(run_dir=run_dir, video_path=Path(manifest["video_path"]))
-        timings[Stage.GEMINI_FLASH.value] = int((time.perf_counter() - t2) * 1000)
 
-        _set_status(store, run_id, state=RunState.RUNNING, stage=Stage.POSTPROCESS, progress=80, timings=timings)
+        def progress_cb(stage_name: str, progress_pct: int, message: str) -> None:
+            stage = Stage.GEMINI_FLASH if stage_name == "GEMINI_FLASH" else Stage.GEMINI_PRO
+            _set_status(
+                store,
+                run_id,
+                state=RunState.RUNNING,
+                stage=stage,
+                progress=max(55, min(progress_pct, 79)),
+                timings=timings,
+                stage_message=message,
+            )
+
+        flash_time_ms, pro_time_ms = gemini.analyze(
+            run_dir=run_dir,
+            video_path=Path(manifest["video_path"]),
+            progress_cb=progress_cb,
+        )
+        timings[Stage.GEMINI_FLASH.value] = flash_time_ms
+        timings[Stage.GEMINI_PRO.value] = pro_time_ms
+
+        _set_status(
+            store,
+            run_id,
+            state=RunState.RUNNING,
+            stage=Stage.POSTPROCESS,
+            progress=80,
+            timings=timings,
+            stage_message="Merging model outputs",
+        )
         t3 = time.perf_counter()
         merge_results(run_dir=run_dir)
         timings[Stage.POSTPROCESS.value] = int((time.perf_counter() - t3) * 1000)
 
-        _set_status(store, run_id, state=RunState.READY_FOR_REVIEW, stage=Stage.READY_FOR_REVIEW, progress=95, timings=timings)
+        _set_status(
+            store,
+            run_id,
+            state=RunState.READY_FOR_REVIEW,
+            stage=Stage.READY_FOR_REVIEW,
+            progress=95,
+            timings=timings,
+            stage_message="Ready for manual review",
+        )
         logger.log("READY_FOR_REVIEW", "INFO", "stage_completed", "Pipeline ready for review")
 
     except Exception as exc:
@@ -108,6 +168,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             stage=current_stage,
             progress=store.get(run_id).status.progress_pct,
             timings=timings,
+            stage_message="Pipeline failed",
             error=str(exc),
             failed_stage=current_stage,
         )
@@ -117,6 +178,8 @@ def export_run(run_id: str, store: RunStore, settings: Settings) -> Path:
     run_dir = settings.runs_dir / run_id
     path = export_case_pack(run_dir)
     status = store.get(run_id).status
-    updated = status.model_copy(update={"state": RunState.EXPORTED, "stage": Stage.EXPORT, "progress_pct": 100})
+    updated = status.model_copy(
+        update={"state": RunState.EXPORTED, "stage": Stage.EXPORT, "progress_pct": 100, "stage_message": "Export completed"}
+    )
     store.update_status(run_id, updated)
     return path

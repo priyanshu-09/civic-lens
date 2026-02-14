@@ -84,6 +84,7 @@ class RunStatus(BaseModel):
     state: RunState
     stage: Stage
     progress_pct: int = Field(ge=0, le=100)
+    stage_message: Optional[str] = None
     failed_stage: Optional[Stage] = None
     error_message: Optional[str] = None
     timings_ms: dict[str, int] = Field(default_factory=dict)
