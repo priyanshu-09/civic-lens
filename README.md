@@ -29,6 +29,10 @@ Civic Lens is a local-first PoC for detecting traffic violations in dashcam vide
 ```bash
 make backend-setup
 ```
+Notes:
+- Setup auto-selects the highest installed Python from `python3.12 -> 3.11 -> 3.10 -> 3.9 -> python3`.
+- If an existing `.venv` uses a different Python minor version, it is recreated automatically.
+- Dependency pins are Python-version-aware (works with Python 3.9+).
 
 ## 2) Run backend
 ```bash
@@ -48,7 +52,11 @@ make frontend-run
 5. Export case pack
 
 ## Environment variables
-Set these in the shell before starting backend:
+Backend startup auto-loads `.env` if present.
+
+Use `.env.example` as template, then create `.env`.
+
+Or set in shell before starting backend:
 - `GEMINI_API_KEY` (optional; fallback path works without it)
 - `RUNS_DIR` (default `data/runs`)
 - `MAX_GEMINI_CONCURRENCY` (default `2`)

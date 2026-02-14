@@ -2,6 +2,7 @@
 
 ## One-time setup
 1. `make backend-setup`
+2. Create `.env` from `.env.example` and set `GEMINI_API_KEY` if Gemini calls are needed.
 
 ## Start services
 1. Terminal 1: `make backend-run`
