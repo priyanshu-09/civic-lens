@@ -1,128 +1,19 @@
-:root {
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  color: #111;
-  background: #f3f4f6;
-}
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Sora:wght@600;700;800&display=swap');
 
 * {
   box-sizing: border-box;
 }
 
-body {
-  margin: 0;
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
-.app {
-  max-width: 1000px;
-  margin: 0 auto;
-  padding: 24px;
+*::-webkit-scrollbar-track {
+  background: rgba(10, 16, 28, 0.8);
 }
 
-header {
-  margin-bottom: 16px;
-}
-
-.panel {
-  background: #fff;
-  border-radius: 10px;
-  padding: 16px;
-  border: 1px solid #d1d5db;
-}
-
-.field {
-  display: block;
-  margin-bottom: 12px;
-}
-
-.field span {
-  display: block;
-  margin-bottom: 6px;
-  font-weight: 600;
-}
-
-input[type="file"],
-textarea,
-select {
-  width: 100%;
-  padding: 8px;
-}
-
-button {
-  padding: 10px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: #0f766e;
-  color: #fff;
-  cursor: pointer;
-}
-
-button:disabled {
-  opacity: 0.6;
-}
-
-.error {
-  color: #b91c1c;
-}
-
-.ok {
-  color: #15803d;
-}
-
-.logbox {
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  background: #111827;
-  color: #e5e7eb;
-  padding: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  max-height: 250px;
-  overflow: auto;
-}
-
-.event-card {
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
-
-.evidence-strip {
-  display: flex;
-  gap: 8px;
-  margin: 10px 0;
-}
-
-.evidence-thumb {
-  width: 140px;
-  height: 84px;
-  object-fit: cover;
-  border-radius: 6px;
-  border: 1px solid #d1d5db;
-}
-
-.trace-panel {
-  margin: 8px 0 12px;
-  padding: 8px;
-  border-radius: 6px;
-  border: 1px dashed #94a3b8;
-  background: #f8fafc;
-}
-
-.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.actions {
-  margin-top: 12px;
-  display: flex;
-  gap: 8px;
-}
-
-.export-btn {
-  margin-top: 12px;
-  background: #1d4ed8;
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.8), rgba(14, 116, 144, 0.9));
+  border-radius: 999px;
 }

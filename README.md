@@ -49,6 +49,11 @@ See `demo-video/README.md` for full details.
 - Node.js 18+
 - npm
 
+## Frontend stack
+- React + Vite
+- Chakra UI v3 for dark themed UI components and layout
+- `react-icons` for status/navigation iconography
+
 ## 1) Backend setup (venv)
 ```bash
 make backend-setup

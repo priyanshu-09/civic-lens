@@ -15,6 +15,11 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
   - Upload
   - Status + Logs
   - Review + Export
+- Chakra UI v3 system theme (`frontend/src/theme.js`) for dark styling tokens.
+- Shared UI components in `frontend/src/components/`:
+  - `BrandMark`
+  - `StatusPill`
+  - `ImageLightbox`
 
 2. Backend API (`backend/api/main.py`)
 - FastAPI endpoints for run lifecycle, status, events, review, logs, and export.
