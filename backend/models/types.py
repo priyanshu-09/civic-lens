@@ -66,6 +66,7 @@ class FinalEvent(BaseModel):
     plate_text: Optional[str] = None
     plate_candidates: list[str] = Field(default_factory=list)
     evidence_frames: list[str] = Field(default_factory=list)
+    report_images: list[str] = Field(default_factory=list)
     evidence_clip_path: Optional[str] = None
     key_moments: list[dict[str, Any]] = Field(default_factory=list)
     explanation_short: str
@@ -88,6 +89,7 @@ class RunStatus(BaseModel):
     failed_stage: Optional[Stage] = None
     error_message: Optional[str] = None
     timings_ms: dict[str, int] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunRecord(BaseModel):

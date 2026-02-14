@@ -45,6 +45,12 @@ export default function ReviewPage({ runId }) {
     }
   }
 
+  const artifactUrl = (path) => {
+    if (!path) return ''
+    const encoded = encodeURIComponent(path)
+    return `${client.defaults.baseURL}/api/runs/${runId}/artifact?path=${encoded}`
+  }
+
   return (
     <div className="panel">
       <h2>Review Violations</h2>
@@ -63,6 +69,15 @@ export default function ReviewPage({ runId }) {
           <p><b>Risk:</b> {event.risk_score.toFixed(1)}</p>
           <p><b>Summary:</b> {event.explanation_short}</p>
           <p><b>Uncertain:</b> {event.uncertain ? 'Yes' : 'No'}</p>
+          {Array.isArray(event.evidence_frames) && event.evidence_frames.length > 0 && (
+            <div className="evidence-strip">
+              {event.evidence_frames.slice(0, 3).map((img, idx) => (
+                <a key={idx} href={artifactUrl(img)} target="_blank" rel="noreferrer">
+                  <img src={artifactUrl(img)} alt={`${event.event_id}-${idx + 1}`} className="evidence-thumb" />
+                </a>
+              ))}
+            </div>
+          )}
 
           <label className="field">
             <span>Decision</span>

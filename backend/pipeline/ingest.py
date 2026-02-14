@@ -9,7 +9,14 @@ from backend.logging_utils.json_logger import RunLogger
 from backend.utils.io import write_json
 
 
-def ingest_video(video_path: Path, run_dir: Path, analysis_fps: int, logger: RunLogger) -> dict:
+def ingest_video(
+    video_path: Path,
+    run_dir: Path,
+    short_fps: int,
+    long_fps: int,
+    long_video_threshold_sec: int,
+    logger: RunLogger,
+) -> dict:
     stage = "INGEST"
     start = time.perf_counter()
     logger.log(stage, "INFO", "stage_started", "Starting ingest stage")
@@ -22,6 +29,7 @@ def ingest_video(video_path: Path, run_dir: Path, analysis_fps: int, logger: Run
     source_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     duration = frame_count / source_fps if source_fps > 0 else 0
+    analysis_fps = long_fps if duration > long_video_threshold_sec else short_fps
     sample_every = max(int(round(source_fps / max(analysis_fps, 1))), 1)
 
     frames_dir = run_dir / "frames"

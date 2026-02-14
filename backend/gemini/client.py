@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 import json
 import time
 from pathlib import Path
@@ -91,28 +91,82 @@ class GeminiClient:
             duration_ms=latency,
         )
 
+        parsed = getattr(response, "parsed", None)
+        if isinstance(parsed, dict):
+            return parsed
+
         text = response.text or "{}"
         return json.loads(text)
+
+    def _flash_fallback(self, candidate: Candidate) -> FlashEvent:
+        return FlashEvent(
+            candidate_id=candidate.candidate_id,
+            is_relevant=candidate.score >= 0.55,
+            event_type=candidate.event_type,
+            confidence=round(min(0.95, max(0.2, candidate.score)), 3),
+            start_time=candidate.start_s,
+            end_time=candidate.end_s,
+            plate_visible=False,
+            violator_description="Vehicle detected in candidate window",
+            needs_pro=candidate.score >= 0.7,
+        )
+
+    def _pro_fallback(self, idx: int, candidate: Candidate, flash_event: FlashEvent, reason: str) -> FinalEvent:
+        return FinalEvent(
+            event_id=f"evt_{idx + 1:03d}",
+            event_type=flash_event.event_type,
+            confidence=flash_event.confidence,
+            risk_score=round(candidate.score * 100, 2),
+            start_time=flash_event.start_time,
+            end_time=flash_event.end_time,
+            key_moments=[{"t": flash_event.start_time, "note": "Candidate activity starts"}],
+            violator_description=flash_event.violator_description,
+            plate_text=None,
+            plate_candidates=[],
+            explanation_short="Potential violation detected in candidate window. Manual review required.",
+            uncertain=True,
+            uncertainty_reason=reason,
+        )
 
     def analyze(
         self,
         run_dir: Path,
         video_path: Path,
-        max_pro: int = 8,
-        progress_cb: Optional[Callable[[str, int, str], None]] = None,
-    ) -> tuple[int, int]:
-        candidates = [Candidate(**c) for c in read_json(run_dir / "candidates.json").get("candidates", [])]
-        file_ref = None
+        perf_config: dict[str, Any],
+        progress_cb: Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]] = None,
+    ) -> tuple[int, int, dict[str, Any]]:
+        all_candidates = [Candidate(**c) for c in read_json(run_dir / "candidates.json").get("candidates", [])]
+        all_candidates.sort(key=lambda c: c.score, reverse=True)
+
+        flash_limit = int(perf_config.get("gemini_flash_max_candidates", 4))
+        pro_limit = int(perf_config.get("gemini_pro_max_candidates", 2))
+        flash_concurrency = int(perf_config.get("gemini_flash_concurrency", 4))
+        pro_concurrency = int(perf_config.get("gemini_pro_concurrency", 2))
+        flash_timeout = int(perf_config.get("gemini_flash_timeout_sec", 30))
+        pro_timeout = int(perf_config.get("gemini_pro_timeout_sec", 45))
+        retry_attempts = int(perf_config.get("gemini_retry_attempts", 1))
+
+        candidates = all_candidates[:flash_limit]
+        metrics: dict[str, Any] = {
+            "candidate_total": len(candidates),
+            "flash_done": 0,
+            "pro_queued": 0,
+            "pro_done": 0,
+            "flash_concurrency": flash_concurrency,
+            "pro_concurrency": pro_concurrency,
+        }
+
         flash_started = time.perf_counter()
+        file_ref = None
 
         self.logger.log("GEMINI_FLASH", "INFO", "stage_started", "Starting Gemini Flash pass", candidate_count=len(candidates))
         if progress_cb:
-            progress_cb("GEMINI_FLASH", 55, f"Preparing Flash pass for {len(candidates)} candidates")
+            progress_cb("GEMINI_FLASH", 55, f"Preparing Flash pass for {len(candidates)} candidates", metrics)
 
         if self._client:
             self.logger.log("GEMINI_FLASH", "INFO", "file_upload_start", "Uploading video to Gemini")
             if progress_cb:
-                progress_cb("GEMINI_FLASH", 56, "Uploading video for Gemini")
+                progress_cb("GEMINI_FLASH", 56, "Uploading video for Gemini", metrics)
             try:
                 file_ref = self._upload_video(video_path)
                 self.logger.log(
@@ -122,8 +176,6 @@ class GeminiClient:
                     "Video ready",
                     file_uri=getattr(file_ref, "uri", None),
                 )
-                if progress_cb:
-                    progress_cb("GEMINI_FLASH", 57, "Video upload ready, running Flash pass")
             except Exception as exc:
                 self.logger.log(
                     "GEMINI_FLASH",
@@ -133,96 +185,105 @@ class GeminiClient:
                     error_code="GEMINI_UPLOAD_ERROR",
                     error_detail=str(exc),
                 )
-                if progress_cb:
-                    progress_cb("GEMINI_FLASH", 57, "Gemini upload failed, using fallback path")
 
         flash_events: list[FlashEvent] = []
-        pro_events: list[FinalEvent] = []
-        pro_candidates: list[tuple[int, Candidate, FlashEvent]] = []
-        total_candidates = max(1, len(candidates))
 
-        for idx, candidate in enumerate(candidates):
-            self.logger.log(
-                "GEMINI_FLASH",
-                "INFO",
-                "candidate_started",
-                "Running Flash candidate",
-                candidate_id=candidate.candidate_id,
-                candidate_index=idx + 1,
-                candidate_total=len(candidates),
-            )
+        def run_flash(candidate: Candidate, order_idx: int) -> tuple[int, Candidate, FlashEvent]:
             prompt = (
                 "You are validating traffic violations in India. Return strictly valid JSON for the provided schema. "
                 "If evidence is weak set is_relevant=false."
             )
-            flash_payload = None
-            if file_ref:
-                for attempt in range(3):
-                    try:
-                        flash_payload = self._generate(
-                            model=self.flash_model,
-                            file_ref=file_ref,
-                            start_s=candidate.start_s,
-                            end_s=candidate.end_s,
-                            fps=2,
-                            prompt=prompt,
-                            schema=FLASH_SCHEMA,
-                            stage="GEMINI_FLASH",
-                            candidate_id=candidate.candidate_id,
-                            timeout_sec=45,
-                        )
-                        break
-                    except Exception as exc:
-                        self.logger.log(
-                            "GEMINI_FLASH",
-                            "ERROR",
-                            "gemini_retry",
-                            "Flash call failed",
-                            candidate_id=candidate.candidate_id,
-                            retry_count=attempt + 1,
-                            error_detail=str(exc),
-                        )
+            if not file_ref:
+                return order_idx, candidate, self._flash_fallback(candidate)
+
+            payload = None
+            for attempt in range(retry_attempts + 1):
+                try:
+                    payload = self._generate(
+                        model=self.flash_model,
+                        file_ref=file_ref,
+                        start_s=candidate.start_s,
+                        end_s=candidate.end_s,
+                        fps=2,
+                        prompt=prompt,
+                        schema=FLASH_SCHEMA,
+                        stage="GEMINI_FLASH",
+                        candidate_id=candidate.candidate_id,
+                        timeout_sec=flash_timeout,
+                    )
+                    break
+                except Exception as exc:
+                    self.logger.log(
+                        "GEMINI_FLASH",
+                        "ERROR",
+                        "gemini_retry",
+                        "Flash call failed",
+                        candidate_id=candidate.candidate_id,
+                        retry_count=attempt + 1,
+                        error_detail=str(exc),
+                    )
+                    if attempt < retry_attempts:
                         time.sleep(2 ** attempt)
+            if not payload:
+                return order_idx, candidate, self._flash_fallback(candidate)
+            return order_idx, candidate, FlashEvent(**payload)
 
-            if not flash_payload:
-                flash_payload = {
-                    "candidate_id": candidate.candidate_id,
-                    "is_relevant": candidate.score >= 0.55,
-                    "event_type": candidate.event_type.value,
-                    "confidence": round(min(0.95, max(0.2, candidate.score)), 3),
-                    "start_time": candidate.start_s,
-                    "end_time": candidate.end_s,
-                    "plate_visible": False,
-                    "violator_description": "Vehicle detected in candidate window",
-                    "needs_pro": candidate.score >= 0.7,
-                }
+        with ThreadPoolExecutor(max_workers=max(1, flash_concurrency)) as executor:
+            futures = {}
+            for idx, candidate in enumerate(candidates):
+                self.logger.log(
+                    "GEMINI_FLASH",
+                    "INFO",
+                    "candidate_started",
+                    "Running Flash candidate",
+                    candidate_id=candidate.candidate_id,
+                    candidate_index=idx + 1,
+                    candidate_total=len(candidates),
+                )
+                fut = executor.submit(run_flash, candidate, idx)
+                futures[fut] = candidate.candidate_id
 
-            flash_event = FlashEvent(**flash_payload)
-            flash_events.append(flash_event)
-            self.logger.log(
-                "GEMINI_FLASH",
-                "INFO",
-                "candidate_completed",
-                "Flash candidate complete",
-                candidate_id=candidate.candidate_id,
-                confidence=flash_event.confidence,
-                relevant=flash_event.is_relevant,
-            )
-            if progress_cb:
-                done = idx + 1
-                pct = 57 + int((done / total_candidates) * 13)
-                progress_cb("GEMINI_FLASH", pct, f"Flash analyzed {done}/{len(candidates)} candidates")
-
-            should_escalate = flash_event.is_relevant and (
-                flash_event.confidence >= 0.65 or flash_event.needs_pro or candidate.event_type.value == "RECKLESS_DRIVING"
-            )
-            if not should_escalate:
-                continue
-            if len(pro_candidates) >= max_pro:
-                continue
-            pro_candidates.append((idx, candidate, flash_event))
+            flash_results: list[tuple[int, Candidate, FlashEvent]] = []
+            total = max(1, len(futures))
+            for done_idx, future in enumerate(as_completed(futures), start=1):
+                order_idx, candidate, flash_event = future.result()
+                flash_results.append((order_idx, candidate, flash_event))
+                flash_events.append(flash_event)
+                metrics["flash_done"] = done_idx
+                self.logger.log(
+                    "GEMINI_FLASH",
+                    "INFO",
+                    "candidate_completed",
+                    "Flash candidate complete",
+                    candidate_id=candidate.candidate_id,
+                    confidence=flash_event.confidence,
+                    relevant=flash_event.is_relevant,
+                )
+                if progress_cb:
+                    pct = 57 + int((done_idx / total) * 13)
+                    progress_cb("GEMINI_FLASH", pct, f"Flash analyzed {done_idx}/{len(candidates)} candidates", metrics)
 
         flash_elapsed = int((time.perf_counter() - flash_started) * 1000)
+
+        flash_results.sort(key=lambda x: x[0])
+        top_candidate_id = flash_results[0][1].candidate_id if flash_results else None
+
+        pro_queue: list[tuple[float, int, Candidate, FlashEvent]] = []
+        for order_idx, candidate, flash_event in flash_results:
+            if not flash_event.is_relevant:
+                continue
+            severe = flash_event.event_type.value in {"RED_LIGHT_JUMP", "WRONG_SIDE_DRIVING"}
+            ambiguous = 0.45 <= flash_event.confidence <= 0.8
+            top_risk = candidate.candidate_id == top_candidate_id
+            if not (severe or ambiguous or flash_event.plate_visible or top_risk):
+                continue
+            priority = candidate.score + (0.35 if severe else 0.0) + (0.2 if flash_event.plate_visible else 0.0) + (0.1 if ambiguous else 0.0)
+            pro_queue.append((priority, order_idx, candidate, flash_event))
+
+        pro_queue.sort(key=lambda x: x[0], reverse=True)
+        queued = pro_queue[: max(0, pro_limit)]
+        metrics["pro_queued"] = len(queued)
+
         self.logger.log(
             "GEMINI_FLASH",
             "INFO",
@@ -230,108 +291,115 @@ class GeminiClient:
             "Flash pass completed",
             duration_ms=flash_elapsed,
             event_count=len(flash_events),
-            pro_candidate_count=len(pro_candidates),
+            pro_candidate_count=len(queued),
         )
 
         pro_started = time.perf_counter()
-        self.logger.log("GEMINI_PRO", "INFO", "stage_started", "Starting Gemini Pro pass", candidate_count=len(pro_candidates))
+        self.logger.log("GEMINI_PRO", "INFO", "stage_started", "Starting Gemini Pro pass", candidate_count=len(queued))
         if progress_cb:
-            progress_cb("GEMINI_PRO", 70, f"Preparing Pro pass for {len(pro_candidates)} candidates")
+            progress_cb("GEMINI_PRO", 70, f"Preparing Pro pass for {len(queued)} candidates", metrics)
 
-        total_pro = max(1, len(pro_candidates))
-        for pro_idx, (idx, candidate, flash_event) in enumerate(pro_candidates):
-            self.logger.log(
-                "GEMINI_PRO",
-                "INFO",
-                "candidate_started",
-                "Running Pro candidate",
-                candidate_id=candidate.candidate_id,
-                candidate_index=pro_idx + 1,
-                candidate_total=len(pro_candidates),
+        pro_events: list[FinalEvent] = []
+
+        def run_pro(queue_idx: int, order_idx: int, candidate: Candidate, flash_event: FlashEvent) -> tuple[int, FinalEvent, str]:
+            if not file_ref:
+                return queue_idx, self._pro_fallback(order_idx, candidate, flash_event, "Fallback path used due to missing Gemini file upload."), candidate.candidate_id
+
+            prompt = (
+                "You are producing an evidence-only traffic violation record. "
+                "If plate is unreadable, return plate_text as null. "
+                "If uncertain set uncertain true with reason."
             )
-            pro_payload = None
-            if file_ref:
-                pro_prompt = (
-                    "You are producing an evidence-only traffic violation record. "
-                    "If plate is unreadable, return plate_text as null. "
-                    "If uncertain set uncertain true with reason."
-                )
-                fps = 4 if candidate.event_type.value == "RECKLESS_DRIVING" else 2
-                for attempt in range(3):
-                    try:
-                        pro_payload = self._generate(
-                            model=self.pro_model,
-                            file_ref=file_ref,
-                            start_s=candidate.start_s,
-                            end_s=candidate.end_s,
-                            fps=fps,
-                            prompt=pro_prompt,
-                            schema=PRO_SCHEMA,
-                            stage="GEMINI_PRO",
-                            candidate_id=candidate.candidate_id,
-                            timeout_sec=75,
-                        )
-                        break
-                    except Exception as exc:
-                        self.logger.log(
-                            "GEMINI_PRO",
-                            "ERROR",
-                            "gemini_retry",
-                            "Pro call failed",
-                            candidate_id=candidate.candidate_id,
-                            retry_count=attempt + 1,
-                            error_detail=str(exc),
-                        )
+            fps = 4 if candidate.event_type.value == "RECKLESS_DRIVING" else 2
+            payload = None
+            for attempt in range(retry_attempts + 1):
+                try:
+                    payload = self._generate(
+                        model=self.pro_model,
+                        file_ref=file_ref,
+                        start_s=candidate.start_s,
+                        end_s=candidate.end_s,
+                        fps=fps,
+                        prompt=prompt,
+                        schema=PRO_SCHEMA,
+                        stage="GEMINI_PRO",
+                        candidate_id=candidate.candidate_id,
+                        timeout_sec=pro_timeout,
+                    )
+                    break
+                except Exception as exc:
+                    self.logger.log(
+                        "GEMINI_PRO",
+                        "ERROR",
+                        "gemini_retry",
+                        "Pro call failed",
+                        candidate_id=candidate.candidate_id,
+                        retry_count=attempt + 1,
+                        error_detail=str(exc),
+                    )
+                    if attempt < retry_attempts:
                         time.sleep(2 ** attempt)
 
-            if not pro_payload:
-                pro_payload = {
-                    "event_id": f"evt_{idx + 1:03d}",
-                    "event_type": flash_event.event_type.value,
-                    "confidence": flash_event.confidence,
-                    "risk_score_gemini": round(candidate.score * 100, 2),
-                    "start_time": flash_event.start_time,
-                    "end_time": flash_event.end_time,
-                    "key_moments": [{"t": flash_event.start_time, "note": "Candidate activity starts"}],
-                    "violator_description": flash_event.violator_description,
-                    "plate_text": None,
-                    "plate_candidates": [],
-                    "explanation_short": "Potential violation detected in candidate window. Manual review required.",
-                    "uncertain": True,
-                    "uncertainty_reason": "Fallback path used due to unavailable or failed Pro inference.",
-                }
+            if not payload:
+                return queue_idx, self._pro_fallback(order_idx, candidate, flash_event, "Fallback path used due to unavailable or failed Pro inference."), candidate.candidate_id
 
-            pro_events.append(
-                FinalEvent(
-                    event_id=pro_payload["event_id"],
-                    event_type=pro_payload["event_type"],
-                    start_time=pro_payload["start_time"],
-                    end_time=pro_payload["end_time"],
-                    confidence=pro_payload["confidence"],
-                    risk_score=pro_payload["risk_score_gemini"],
-                    violator_description=pro_payload["violator_description"],
-                    plate_text=pro_payload.get("plate_text"),
-                    plate_candidates=pro_payload.get("plate_candidates", []),
-                    key_moments=pro_payload.get("key_moments", []),
-                    explanation_short=pro_payload["explanation_short"],
-                    uncertain=pro_payload.get("uncertain", False),
-                    uncertainty_reason=pro_payload.get("uncertainty_reason"),
-                )
+            event = FinalEvent(
+                event_id=payload["event_id"],
+                event_type=payload["event_type"],
+                start_time=payload["start_time"],
+                end_time=payload["end_time"],
+                confidence=payload["confidence"],
+                risk_score=payload["risk_score_gemini"],
+                violator_description=payload["violator_description"],
+                plate_text=payload.get("plate_text"),
+                plate_candidates=payload.get("plate_candidates", []),
+                key_moments=payload.get("key_moments", []),
+                explanation_short=payload["explanation_short"],
+                uncertain=payload.get("uncertain", False),
+                uncertainty_reason=payload.get("uncertainty_reason"),
             )
-            self.logger.log(
-                "GEMINI_PRO",
-                "INFO",
-                "candidate_completed",
-                "Pro candidate complete",
-                candidate_id=candidate.candidate_id,
-                event_id=pro_payload["event_id"],
-            )
-            if progress_cb:
-                pct = 70 + int(((pro_idx + 1) / total_pro) * 9)
-                progress_cb("GEMINI_PRO", pct, f"Pro analyzed {pro_idx + 1}/{len(pro_candidates)} candidates")
+            return queue_idx, event, candidate.candidate_id
+
+        if queued:
+            with ThreadPoolExecutor(max_workers=max(1, pro_concurrency)) as executor:
+                futures = {}
+                for queue_idx, (_priority, order_idx, candidate, flash_event) in enumerate(queued):
+                    self.logger.log(
+                        "GEMINI_PRO",
+                        "INFO",
+                        "candidate_started",
+                        "Running Pro candidate",
+                        candidate_id=candidate.candidate_id,
+                        candidate_index=queue_idx + 1,
+                        candidate_total=len(queued),
+                    )
+                    fut = executor.submit(run_pro, queue_idx, order_idx, candidate, flash_event)
+                    futures[fut] = candidate.candidate_id
+
+                total = max(1, len(futures))
+                ordered: list[tuple[int, FinalEvent, str]] = []
+                for done_idx, future in enumerate(as_completed(futures), start=1):
+                    queue_idx, event, candidate_id = future.result()
+                    ordered.append((queue_idx, event, candidate_id))
+                    metrics["pro_done"] = done_idx
+                    self.logger.log(
+                        "GEMINI_PRO",
+                        "INFO",
+                        "candidate_completed",
+                        "Pro candidate complete",
+                        candidate_id=candidate_id,
+                        event_id=event.event_id,
+                    )
+                    if progress_cb:
+                        pct = 70 + int((done_idx / total) * 9)
+                        progress_cb("GEMINI_PRO", pct, f"Pro analyzed {done_idx}/{len(queued)} candidates", metrics)
+
+                ordered.sort(key=lambda x: x[0])
+                pro_events = [row[1] for row in ordered]
 
         write_json(run_dir / "flash_events.json", {"events": [e.model_dump() for e in flash_events]})
         write_json(run_dir / "pro_events.json", {"events": [e.model_dump() for e in pro_events]})
+
         pro_elapsed = int((time.perf_counter() - pro_started) * 1000)
         self.logger.log(
             "GEMINI_PRO",
@@ -341,4 +409,4 @@ class GeminiClient:
             duration_ms=pro_elapsed,
             event_count=len(pro_events),
         )
-        return flash_elapsed, pro_elapsed
+        return flash_elapsed, pro_elapsed, metrics

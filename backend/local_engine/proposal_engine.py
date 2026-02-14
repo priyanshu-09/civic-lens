@@ -58,6 +58,7 @@ def run_local_proposals(
     run_dir: Path,
     roi_config_path: Path,
     proposal_config_path: Path,
+    perf_config: dict[str, Any],
     logger: RunLogger,
 ) -> dict[str, Any]:
     stage = "LOCAL_PROPOSALS"
@@ -77,18 +78,23 @@ def run_local_proposals(
 
     h = frames[0]["height"]
     w = frames[0]["width"]
+    max_side = max(h, w)
+    target_long = int(perf_config.get("local_downscale_long_edge", 640))
+    scale = 1.0 if max_side <= target_long else (target_long / float(max_side))
+    work_w = max(1, int(round(w * scale)))
+    work_h = max(1, int(round(h * scale)))
 
-    signal_poly = denormalize_polygon(roi_cfg.get("signal_roi_polygon", []), w, h)
-    wrong_poly = denormalize_polygon(roi_cfg.get("wrong_side_lane_polygon", []), w, h)
-    stop_poly = denormalize_polygon(roi_cfg.get("stop_line_polygon", []), w, h)
+    signal_poly = denormalize_polygon(roi_cfg.get("signal_roi_polygon", []), work_w, work_h)
+    wrong_poly = denormalize_polygon(roi_cfg.get("wrong_side_lane_polygon", []), work_w, work_h)
+    stop_poly = denormalize_polygon(roi_cfg.get("stop_line_polygon", []), work_w, work_h)
     expected_dir = np.array(roi_cfg.get("expected_direction_vector", [1.0, 0.0]), dtype=np.float32)
     if np.linalg.norm(expected_dir) == 0:
         expected_dir = np.array([1.0, 0.0], dtype=np.float32)
     expected_dir = expected_dir / np.linalg.norm(expected_dir)
 
-    signal_mask = polygon_mask((h, w), signal_poly)
-    wrong_mask = polygon_mask((h, w), wrong_poly)
-    stop_mask = polygon_mask((h, w), stop_poly)
+    signal_mask = polygon_mask((work_h, work_w), signal_poly)
+    wrong_mask = polygon_mask((work_h, work_w), wrong_poly)
+    stop_mask = polygon_mask((work_h, work_w), stop_poly)
 
     prev_gray = None
     red_hits: list[int] = []
@@ -105,6 +111,8 @@ def run_local_proposals(
         frame = cv2.imread(meta["path"])
         if frame is None:
             continue
+        if scale != 1.0:
+            frame = cv2.resize(frame, (work_w, work_h), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fg = bg_sub.apply(frame)
 
@@ -242,6 +250,8 @@ def run_local_proposals(
         "Local proposals completed",
         duration_ms=elapsed,
         candidate_count=len(pruned),
+        resized=scale != 1.0,
+        frame_scale=round(scale, 3),
     )
     if not pruned:
         logger.log(stage, "WARNING", "candidate_empty_warning", "No candidates generated", error_code="CANDIDATE_EMPTY_WARNING")

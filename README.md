@@ -6,8 +6,9 @@ Civic Lens is a local-first PoC for detecting traffic violations in dashcam vide
 - Upload a video from UI
 - Run local proposal engine to find candidate violation windows
 - Verify and enrich candidates using Gemini (Flash -> Pro) when API key is available
+- Apply speed caps and concurrent Gemini routing via `backend/config/perf_config.json`
 - Review events manually (accept/reject, notes, include plate)
-- Export a case pack ZIP with logs, JSON artifacts, and report
+- Export a case pack ZIP with logs, JSON artifacts, report, and incident thumbnails
 
 ## Violation types in this build
 - `NO_HELMET`
@@ -48,7 +49,7 @@ make frontend-run
 1. Open `http://localhost:5173`
 2. Upload a video and start analysis
 3. Monitor stage progress + logs
-4. Review events and save decisions
+4. Review events and inspect incident thumbnails
 5. Export case pack
 
 ## Environment variables
@@ -67,3 +68,10 @@ Or set in shell before starting backend:
 ## Security and commits
 - Do not commit `.env`, `.env.*`, `.venv`, API keys, or generated run artifacts.
 - `.gitignore` already excludes these paths.
+
+## Performance tuning
+- Edit `backend/config/perf_config.json` to tune:
+  - candidate caps (`gemini_flash_max_candidates`, `gemini_pro_max_candidates`)
+  - concurrency (`gemini_flash_concurrency`, `gemini_pro_concurrency`)
+  - timeouts/retries
+  - adaptive ingest FPS and local downscale

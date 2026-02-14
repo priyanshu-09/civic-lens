@@ -6,15 +6,26 @@ from backend.models.types import Candidate, FinalEvent, FlashEvent
 from backend.utils.io import read_json, write_json
 
 
-def _select_evidence_frames(manifest: dict, start: float, end: float) -> list[str]:
+def _normalize_frame_path(run_dir: Path, frame_path: str) -> str:
+    p = Path(frame_path)
+    if p.is_absolute():
+        try:
+            return str(p.resolve().relative_to(run_dir.resolve()))
+        except ValueError:
+            return str(p)
+    return str(p)
+
+
+def _select_evidence_frames(run_dir: Path, manifest: dict, start: float, end: float) -> list[str]:
     frames = manifest.get("frames", [])
     in_window = [f for f in frames if start <= f["ts_sec"] <= end]
     if not in_window:
         return []
     if len(in_window) <= 3:
-        return [f["path"] for f in in_window]
+        return [_normalize_frame_path(run_dir, f["path"]) for f in in_window]
     mid = len(in_window) // 2
-    return [in_window[0]["path"], in_window[mid]["path"], in_window[-1]["path"]]
+    picked = [in_window[0]["path"], in_window[mid]["path"], in_window[-1]["path"]]
+    return [_normalize_frame_path(run_dir, p) for p in picked]
 
 
 def merge_results(run_dir: Path) -> list[FinalEvent]:
@@ -40,7 +51,8 @@ def merge_results(run_dir: Path) -> list[FinalEvent]:
             event = pro_by_type_time[key]
             event.confidence = round(0.45 * local_score + 0.55 * event.confidence, 3)
             event.risk_score = round(0.4 * (local_score * 100) + 0.6 * event.risk_score, 2)
-            event.evidence_frames = _select_evidence_frames(manifest, event.start_time, event.end_time)
+            event.evidence_frames = _select_evidence_frames(run_dir, manifest, event.start_time, event.end_time)
+            event.report_images = []
             merged.append(event)
             continue
 
@@ -55,7 +67,8 @@ def merge_results(run_dir: Path) -> list[FinalEvent]:
                 violator_description=flash.violator_description,
                 plate_text=None,
                 plate_candidates=[],
-                evidence_frames=_select_evidence_frames(manifest, flash.start_time, flash.end_time),
+                evidence_frames=_select_evidence_frames(run_dir, manifest, flash.start_time, flash.end_time),
+                report_images=[],
                 evidence_clip_path=None,
                 key_moments=[{"t": flash.start_time, "note": "Flash-only event"}],
                 explanation_short="Potential event identified by local pipeline and Flash validation.",

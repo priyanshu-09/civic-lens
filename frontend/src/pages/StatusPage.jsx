@@ -63,6 +63,12 @@ export default function StatusPage({ runId, onReviewReady }) {
           <p><b>Stage:</b> {status.stage}</p>
           <p><b>Progress:</b> {status.progress_pct}%</p>
           {status.stage_message && <p><b>Details:</b> {status.stage_message}</p>}
+          {status.metrics && (
+            <p>
+              <b>Metrics:</b> candidates {status.metrics.flash_done || 0}/{status.metrics.candidate_total || 0},
+              pro {status.metrics.pro_done || 0}/{status.metrics.pro_queued || 0}
+            </p>
+          )}
           {status.error_message && <p className="error"><b>Error:</b> {status.error_message}</p>}
         </>
       )}

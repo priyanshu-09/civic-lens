@@ -1,0 +1,13 @@
+{
+  "gemini_flash_max_candidates": 4,
+  "gemini_pro_max_candidates": 2,
+  "gemini_flash_concurrency": 4,
+  "gemini_pro_concurrency": 2,
+  "gemini_flash_timeout_sec": 30,
+  "gemini_pro_timeout_sec": 45,
+  "gemini_retry_attempts": 1,
+  "analysis_fps_short": 4,
+  "analysis_fps_long": 2,
+  "long_video_threshold_sec": 90,
+  "local_downscale_long_edge": 640
+}

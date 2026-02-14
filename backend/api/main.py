@@ -107,6 +107,8 @@ def run_status(run_id: str) -> dict:
 
 @app.get("/api/runs/{run_id}/events")
 def run_events(run_id: str) -> dict:
+    if not store.exists(run_id):
+        raise HTTPException(status_code=404, detail="run_id not found")
     run_dir = settings.runs_dir / run_id
     path = run_dir / "events_final.json"
     if not path.exists():
@@ -138,6 +140,24 @@ def get_logs(run_id: str, tail: int = 50) -> dict:
     run_dir = settings.runs_dir / run_id
     log_path = run_dir / "pipeline.log.jsonl"
     return {"lines": tail_logs(log_path, lines=max(1, min(500, tail)))}
+
+
+@app.get("/api/runs/{run_id}/artifact")
+def get_artifact(run_id: str, path: str):
+    if not store.exists(run_id):
+        raise HTTPException(status_code=404, detail="run_id not found")
+    run_dir = (settings.runs_dir / run_id).resolve()
+
+    requested = Path(path)
+    if requested.is_absolute():
+        resolved = requested.resolve()
+    else:
+        resolved = (run_dir / requested).resolve()
+    if not str(resolved).startswith(str(run_dir)):
+        raise HTTPException(status_code=400, detail="invalid artifact path")
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(resolved)
 
 
 @app.get("/api/runs/{run_id}/export")

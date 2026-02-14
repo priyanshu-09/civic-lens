@@ -40,7 +40,8 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 
 6. Gemini Analyzer (`backend/gemini/client.py`)
 - Uploads full video once via Files API (when key available).
-- Runs Flash on all candidates, Pro on selected candidates.
+- Runs Flash on top-K candidates (capped), Pro on routed subset (capped).
+- Executes Flash and Pro calls concurrently with configurable worker limits.
 - Falls back to deterministic placeholder outputs if API unavailable/fails.
 - Writes `flash_events.json` and `pro_events.json`.
 
@@ -50,6 +51,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 
 8. Export (`backend/export/exporter.py`)
 - Builds HTML report and PDF/fallback text file.
+- Copies event-linked evidence frames to `export/evidence/<event_id>/` and embeds thumbnails in report HTML/PDF.
 - Packages artifacts into `export/case_pack.zip`.
 
 9. Logging (`backend/logging_utils/json_logger.py`)
@@ -70,6 +72,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - `pipeline.log.jsonl`
 - `export/report.html`
 - `export/report.pdf` (or fallback text)
+- `export/evidence/<event_id>/img_*.jpg`
 - `export/case_pack.zip`
 
 ## API Contracts
@@ -81,7 +84,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - starts async pipeline
 
 3. `GET /api/runs/{run_id}/status`
-- returns stage/state/progress/failure metadata plus `stage_message` for in-stage progress detail
+- returns stage/state/progress/failure metadata plus `stage_message` and live `metrics` (flash/pro counters)
 
 4. `GET /api/runs/{run_id}/events`
 - returns final merged events
@@ -92,7 +95,10 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 6. `GET /api/runs/{run_id}/logs?tail=N`
 - returns latest structured log lines
 
-7. `GET /api/runs/{run_id}/export`
+7. `GET /api/runs/{run_id}/artifact?path=<relative_or_abs_within_run>`
+- returns a run-local artifact file (used by UI to show evidence images)
+
+8. `GET /api/runs/{run_id}/export`
 - returns zip case pack
 
 ## Failure and Fallback Behavior
@@ -110,6 +116,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 - Files:
   - `backend/config/default_roi_config.json`
   - `backend/config/proposal_config.json`
+  - `backend/config/perf_config.json`
 
 ## Documentation Sync Rule
 Any architecture/API/stage change must update this file in the same change.

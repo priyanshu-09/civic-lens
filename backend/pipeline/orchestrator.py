@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 from typing import Optional
 
+from backend.config.perf import load_perf_config
 from backend.config.settings import Settings
 from backend.export.exporter import export_case_pack
 from backend.gemini.client import GeminiClient
@@ -21,6 +23,7 @@ def _set_status(
     progress: int,
     timings: dict[str, int],
     stage_message: Optional[str] = None,
+    metrics: Optional[dict[str, Any]] = None,
     error: Optional[str] = None,
     failed_stage: Optional[Stage] = None,
 ) -> None:
@@ -36,6 +39,7 @@ def _set_status(
             failed_stage=failed_stage,
             error_message=error,
             timings_ms=timings,
+            metrics=metrics or record.status.metrics,
         ),
     )
 
@@ -49,7 +53,16 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
     record = store.get(run_id)
     run_dir = settings.runs_dir / run_id
     logger = RunLogger(run_id=run_id, log_file=run_dir / "pipeline.log.jsonl")
+    perf_config = load_perf_config(Path("backend/config/perf_config.json"))
     timings: dict[str, int] = {}
+    metrics: dict[str, Any] = {
+        "candidate_total": 0,
+        "flash_done": 0,
+        "pro_queued": 0,
+        "pro_done": 0,
+        "flash_concurrency": int(perf_config["gemini_flash_concurrency"]),
+        "pro_concurrency": int(perf_config["gemini_pro_concurrency"]),
+    }
 
     try:
         _set_status(
@@ -60,13 +73,16 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             progress=5,
             timings=timings,
             stage_message="Preparing ingest",
+            metrics=metrics,
         )
 
         t0 = time.perf_counter()
         manifest = ingest_video(
             video_path=Path(record.video_path),
             run_dir=run_dir,
-            analysis_fps=settings.default_analysis_fps,
+            short_fps=int(perf_config["analysis_fps_short"]),
+            long_fps=int(perf_config["analysis_fps_long"]),
+            long_video_threshold_sec=int(perf_config["long_video_threshold_sec"]),
             logger=logger,
         )
         timings[Stage.INGEST.value] = int((time.perf_counter() - t0) * 1000)
@@ -79,6 +95,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             progress=30,
             timings=timings,
             stage_message="Running local proposal heuristics",
+            metrics=metrics,
         )
         t1 = time.perf_counter()
         run_local_proposals(
@@ -86,6 +103,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             run_dir=run_dir,
             roi_config_path=Path(record.roi_config_path),
             proposal_config_path=Path("backend/config/proposal_config.json"),
+            perf_config=perf_config,
             logger=logger,
         )
         timings[Stage.LOCAL_PROPOSALS.value] = int((time.perf_counter() - t1) * 1000)
@@ -98,6 +116,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             progress=55,
             timings=timings,
             stage_message="Initializing Gemini analysis",
+            metrics=metrics,
         )
         t2 = time.perf_counter()
         gemini = GeminiClient(
@@ -107,8 +126,10 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             logger=logger,
         )
 
-        def progress_cb(stage_name: str, progress_pct: int, message: str) -> None:
+        def progress_cb(stage_name: str, progress_pct: int, message: str, payload: Optional[dict[str, Any]] = None) -> None:
             stage = Stage.GEMINI_FLASH if stage_name == "GEMINI_FLASH" else Stage.GEMINI_PRO
+            if payload:
+                metrics.update(payload)
             _set_status(
                 store,
                 run_id,
@@ -117,13 +138,16 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
                 progress=max(55, min(progress_pct, 79)),
                 timings=timings,
                 stage_message=message,
+                metrics=metrics,
             )
 
-        flash_time_ms, pro_time_ms = gemini.analyze(
+        flash_time_ms, pro_time_ms, gemini_metrics = gemini.analyze(
             run_dir=run_dir,
             video_path=Path(manifest["video_path"]),
+            perf_config=perf_config,
             progress_cb=progress_cb,
         )
+        metrics.update(gemini_metrics)
         timings[Stage.GEMINI_FLASH.value] = flash_time_ms
         timings[Stage.GEMINI_PRO.value] = pro_time_ms
 
@@ -135,6 +159,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             progress=80,
             timings=timings,
             stage_message="Merging model outputs",
+            metrics=metrics,
         )
         t3 = time.perf_counter()
         merge_results(run_dir=run_dir)
@@ -148,6 +173,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             progress=95,
             timings=timings,
             stage_message="Ready for manual review",
+            metrics=metrics,
         )
         logger.log("READY_FOR_REVIEW", "INFO", "stage_completed", "Pipeline ready for review")
 
@@ -169,6 +195,7 @@ def run_pipeline(run_id: str, store: RunStore, settings: Settings) -> None:
             progress=store.get(run_id).status.progress_pct,
             timings=timings,
             stage_message="Pipeline failed",
+            metrics=metrics,
             error=str(exc),
             failed_stage=current_stage,
         )
@@ -179,7 +206,12 @@ def export_run(run_id: str, store: RunStore, settings: Settings) -> Path:
     path = export_case_pack(run_dir)
     status = store.get(run_id).status
     updated = status.model_copy(
-        update={"state": RunState.EXPORTED, "stage": Stage.EXPORT, "progress_pct": 100, "stage_message": "Export completed"}
+        update={
+            "state": RunState.EXPORTED,
+            "stage": Stage.EXPORT,
+            "progress_pct": 100,
+            "stage_message": "Export completed",
+        }
     )
     store.update_status(run_id, updated)
     return path
