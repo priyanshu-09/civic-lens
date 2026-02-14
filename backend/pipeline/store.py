@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from threading import Lock
 
@@ -13,11 +12,25 @@ class RunStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
         self._runs: dict[str, RunRecord] = {}
+        self._load_existing()
+
+    def _load_existing(self) -> None:
+        for status_file in self.root.glob("*/status.json"):
+            try:
+                record = RunRecord.model_validate_json(status_file.read_text(encoding="utf-8"))
+                self._runs[record.run_id] = record
+            except Exception:
+                # Ignore malformed legacy entries and continue loading other runs.
+                continue
 
     def register(self, run: RunRecord) -> None:
         with self._lock:
             self._runs[run.run_id] = run
             self._persist(run)
+
+    def exists(self, run_id: str) -> bool:
+        with self._lock:
+            return run_id in self._runs
 
     def get(self, run_id: str) -> RunRecord:
         with self._lock:

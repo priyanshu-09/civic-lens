@@ -18,6 +18,7 @@ Civic Lens is a local-first hackathon PoC for traffic violation detection from d
 
 2. Backend API (`backend/api/main.py`)
 - FastAPI endpoints for run lifecycle, status, events, review, logs, and export.
+- Run metadata is restored from persisted `status.json` files on startup, so previous run IDs remain queryable after backend restarts.
 
 3. Pipeline Orchestrator (`backend/pipeline/orchestrator.py`)
 - Runs stages sequentially and persists run status.

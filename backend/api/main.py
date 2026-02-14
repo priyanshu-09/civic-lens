@@ -69,7 +69,7 @@ async def create_run(
 
 @app.post("/api/runs/{run_id}/start")
 def start_run(run_id: str) -> dict[str, str]:
-    if run_id not in [r.run_id for r in store.all()]:
+    if not store.exists(run_id):
         raise HTTPException(status_code=404, detail="run_id not found")
 
     if run_id in threads and threads[run_id].is_alive():
@@ -133,6 +133,8 @@ def save_review(run_id: str, event_id: str, decision: ReviewDecision) -> dict[st
 
 @app.get("/api/runs/{run_id}/logs")
 def get_logs(run_id: str, tail: int = 50) -> dict:
+    if not store.exists(run_id):
+        raise HTTPException(status_code=404, detail="run_id not found")
     run_dir = settings.runs_dir / run_id
     log_path = run_dir / "pipeline.log.jsonl"
     return {"lines": tail_logs(log_path, lines=max(1, min(500, tail)))}
