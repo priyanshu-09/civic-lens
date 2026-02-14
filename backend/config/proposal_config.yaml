@@ -1,0 +1,8 @@
+analysis_fps: 4
+k_helmet: 6
+k_red: 3
+k_wrong: 5
+risk_threshold: 0.60
+max_candidates_total: 12
+max_candidates_per_type: 4
+min_same_type_gap_seconds: 2.0

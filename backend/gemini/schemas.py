@@ -1,0 +1,75 @@
+FLASH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidate_id": {"type": "string"},
+        "is_relevant": {"type": "boolean"},
+        "event_type": {
+            "type": "string",
+            "enum": ["NO_HELMET", "RED_LIGHT_JUMP", "WRONG_SIDE_DRIVING", "RECKLESS_DRIVING"],
+        },
+        "confidence": {"type": "number"},
+        "start_time": {"type": "number"},
+        "end_time": {"type": "number"},
+        "plate_visible": {"type": "boolean"},
+        "violator_description": {"type": "string"},
+        "needs_pro": {"type": "boolean"},
+    },
+    "required": [
+        "candidate_id",
+        "is_relevant",
+        "event_type",
+        "confidence",
+        "start_time",
+        "end_time",
+        "plate_visible",
+        "violator_description",
+        "needs_pro",
+    ],
+}
+
+PRO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "event_id": {"type": "string"},
+        "event_type": {
+            "type": "string",
+            "enum": ["NO_HELMET", "RED_LIGHT_JUMP", "WRONG_SIDE_DRIVING", "RECKLESS_DRIVING"],
+        },
+        "confidence": {"type": "number"},
+        "risk_score_gemini": {"type": "number"},
+        "start_time": {"type": "number"},
+        "end_time": {"type": "number"},
+        "key_moments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "t": {"type": "number"},
+                    "note": {"type": "string"},
+                },
+                "required": ["t", "note"],
+            },
+        },
+        "violator_description": {"type": "string"},
+        "plate_text": {"type": ["string", "null"]},
+        "plate_candidates": {"type": "array", "items": {"type": "string"}},
+        "explanation_short": {"type": "string"},
+        "uncertain": {"type": "boolean"},
+        "uncertainty_reason": {"type": ["string", "null"]},
+    },
+    "required": [
+        "event_id",
+        "event_type",
+        "confidence",
+        "risk_score_gemini",
+        "start_time",
+        "end_time",
+        "key_moments",
+        "violator_description",
+        "plate_text",
+        "plate_candidates",
+        "explanation_short",
+        "uncertain",
+        "uncertainty_reason",
+    ],
+}
