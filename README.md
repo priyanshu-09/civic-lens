@@ -19,6 +19,26 @@ Civic Lens is a local-first PoC for detecting traffic violations in dashcam vide
 - `WRONG_SIDE_DRIVING`
 - `RECKLESS_DRIVING`
 
+## Demo Video
+
+A professional Remotion demo video showcasing Civic Lens is available in `demo-video/`:
+
+```bash
+cd demo-video
+npm install
+npm run dev          # Preview the video
+npm run build        # Render as MP4
+npm run build-gif    # Render as GIF
+```
+
+The 90-second video walks through:
+1. The problem (reckless driving, rule violations, zero accountability)
+2. The solution (AI-powered detection + human review)
+3. The user flow (upload → process → review → export)
+4. Key features and impact
+
+See `demo-video/README.md` for full details.
+
 ## Repository docs
 - Architecture: `docs/ARCHITECTURE.md`
 - Runbook: `docs/RUNBOOK.md`

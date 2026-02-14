@@ -1,0 +1,20 @@
+{
+  "name": "civic-lens-demo-video",
+  "version": "1.0.0",
+  "description": "Remotion demo video for Civic Lens",
+  "type": "module",
+  "scripts": {
+    "dev": "remotion preview",
+    "build": "remotion render Root output.mp4",
+    "build-gif": "remotion render Root output.gif"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
+  }
+}
