@@ -20,11 +20,11 @@ if [ -z "${PY_BIN:-}" ]; then
   exit 1
 fi
 
-TARGET_VER="$("$PY_BIN" -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")')"
+TARGET_VER="$("$PY_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 echo "Using interpreter: $PY_BIN ($TARGET_VER)"
 
 if [ -d .venv ]; then
-  CURRENT_VER="$(.venv/bin/python -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")' 2>/dev/null || echo unknown)"
+  CURRENT_VER="$(.venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo unknown)"
   if [ "$CURRENT_VER" != "$TARGET_VER" ]; then
     echo "Existing .venv uses Python $CURRENT_VER; recreating with Python $TARGET_VER"
     rm -rf .venv
