@@ -1,28 +1,27 @@
 import { Badge } from '@chakra-ui/react'
 
-const toneByState = {
-  PENDING: 'gray',
-  RUNNING: 'cyan',
-  READY_FOR_REVIEW: 'green',
-  EXPORTED: 'blue',
-  FAILED: 'red',
+const stateConfig = {
+  PENDING: { tone: 'blue', label: 'Queued' },
+  RUNNING: { tone: 'cyan', label: 'Processing' },
+  READY_FOR_REVIEW: { tone: 'green', label: 'Ready to review' },
+  EXPORTED: { tone: 'blue', label: 'Downloaded' },
+  FAILED: { tone: 'red', label: 'Needs attention' },
 }
 
 export default function StatusPill({ value }) {
-  const tone = toneByState[value] || 'gray'
+  const config = stateConfig[value] || { tone: 'gray', label: 'Unknown' }
+
   return (
     <Badge
-      colorPalette={tone}
+      colorPalette={config.tone}
       variant="subtle"
       borderRadius="full"
       px={3}
       py={1}
       fontSize="xs"
-      letterSpacing="0.4px"
-      textTransform="uppercase"
       fontWeight="700"
     >
-      {value || 'UNKNOWN'}
+      {config.label}
     </Badge>
   )
 }

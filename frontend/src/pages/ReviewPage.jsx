@@ -1,21 +1,75 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Badge, Box, Button, Card, DataList, HStack, Image, NativeSelect, Progress, SimpleGrid, Skeleton, Spinner, Stack, Stat, Status, Text, Textarea } from '@chakra-ui/react'
+import {
+  Alert,
+  AspectRatio,
+  Badge,
+  Box,
+  Button,
+  Card,
+  HStack,
+  Image,
+  NativeSelect,
+  Progress,
+  SimpleGrid,
+  Skeleton,
+  Spinner,
+  Stack,
+  Stat,
+  Status,
+  Text,
+  Textarea,
+} from '@chakra-ui/react'
 import { client } from '../api/client'
 import ImageLightbox from '../components/ImageLightbox'
 import StatusPill from '../components/StatusPill'
 
 const stageHealthByState = {
-  PENDING: { colorPalette: 'blue', label: 'Queued' },
-  RUNNING: { colorPalette: 'orange', label: 'Live' },
-  READY_FOR_REVIEW: { colorPalette: 'green', label: 'Review Ready' },
-  EXPORTED: { colorPalette: 'cyan', label: 'Exported' },
-  FAILED: { colorPalette: 'red', label: 'Failed' },
+  PENDING: { colorPalette: 'blue', label: 'Waiting' },
+  RUNNING: { colorPalette: 'teal', label: 'Processing' },
+  READY_FOR_REVIEW: { colorPalette: 'green', label: 'Ready to review' },
+  EXPORTED: { colorPalette: 'green', label: 'Complete' },
+  FAILED: { colorPalette: 'red', label: 'Needs attention' },
 }
 
-const traceTone = {
-  ok: 'green',
-  fallback: 'orange',
-  pending: 'gray',
+const typeLabelByValue = {
+  NO_HELMET: 'No Helmet',
+  RED_LIGHT_JUMP: 'Red Light Jump',
+  WRONG_SIDE_DRIVING: 'Wrong-Side Driving',
+  RECKLESS_DRIVING: 'Reckless Driving',
+}
+
+const sourceLabelByValue = {
+  GEMINI_FLASH: 'AI first pass',
+  GEMINI_PRO: 'AI deep check',
+  POSTPROCESS: 'Final merge',
+}
+
+const stageLabelByValue = {
+  INGEST: 'Preparing video',
+  LOCAL_PROPOSALS: 'Checking for incidents',
+  GEMINI_FLASH: 'AI review (first pass)',
+  GEMINI_PRO: 'AI review (deep check)',
+  POSTPROCESS: 'Finalizing incident list',
+  READY_FOR_REVIEW: 'Ready to review',
+  EXPORT: 'Building report package',
+}
+
+const priorityFromRisk = (riskValue) => {
+  const risk = Number(riskValue || 0)
+  if (risk >= 70) return { label: 'High', tone: 'red' }
+  if (risk >= 40) return { label: 'Medium', tone: 'orange' }
+  return { label: 'Low', tone: 'green' }
+}
+
+const formatSeconds = (val) => `${Number(val || 0).toFixed(1)}s`
+
+function MetaCard({ label, value, tone = 'gray' }) {
+  return (
+    <Box border="1px solid" borderColor="border" borderRadius="md" bg="bg.elevated" px={3} py={2.5}>
+      <Text fontSize="xs" color="text.soft" mb={1}>{label}</Text>
+      <Badge colorPalette={tone} variant="subtle" size="sm">{value}</Badge>
+    </Box>
+  )
 }
 
 export default function ReviewPage({ runId }) {
@@ -31,7 +85,10 @@ export default function ReviewPage({ runId }) {
   const [lightboxIndex, setLightboxIndex] = useState(0)
   const [lightboxTitle, setLightboxTitle] = useState('')
 
-  const sortedEvents = useMemo(() => [...events].sort((a, b) => Number(a.start_time || 0) - Number(b.start_time || 0)), [events])
+  const sortedEvents = useMemo(
+    () => [...events].sort((a, b) => Number(a.start_time || 0) - Number(b.start_time || 0)),
+    [events],
+  )
 
   useEffect(() => {
     let timer
@@ -40,18 +97,19 @@ export default function ReviewPage({ runId }) {
 
     const poll = async () => {
       if (stopped) return
+
       try {
         const [statusResp, eventsResp, traceResp] = await Promise.all([
           client.get(`/api/runs/${runId}/status`),
           client.get(`/api/runs/${runId}/events`),
           client.get(`/api/runs/${runId}/trace`),
         ])
+
         lastKnownState = statusResp.data?.state || lastKnownState
         setStatus(statusResp.data)
         setEvents(eventsResp.data.events || [])
         setTrace(traceResp.data || { packets: [] })
-        const isProv = Boolean(eventsResp.data?.provisional || traceResp.data?.provisional)
-        setProvisional(isProv)
+        setProvisional(Boolean(eventsResp.data?.provisional || traceResp.data?.provisional))
       } catch (err) {
         setError(err?.response?.data?.detail || err.message)
       }
@@ -61,6 +119,7 @@ export default function ReviewPage({ runId }) {
     }
 
     poll()
+
     return () => {
       stopped = true
       clearTimeout(timer)
@@ -78,18 +137,15 @@ export default function ReviewPage({ runId }) {
 
   const livePackets = useMemo(() => {
     const entries = Array.isArray(trace.packets) ? trace.packets : []
-    return [...entries].sort((a, b) => {
-      const aScore = Number(a?.local?.local_score || 0)
-      const bScore = Number(b?.local?.local_score || 0)
-      return bScore - aScore
-    })
+    return [...entries].sort((a, b) => Number(b?.local?.local_score || 0) - Number(a?.local?.local_score || 0))
   }, [trace])
 
   const saveDecision = async (eventId) => {
     const decision = decisions[eventId] || { decision: 'ACCEPT', reviewer_notes: '', include_plate: false }
+
     try {
       await client.post(`/api/runs/${runId}/events/${eventId}/review`, decision)
-      setMessage(`Saved decision for ${eventId}`)
+      setMessage('Your decision has been saved.')
     } catch (err) {
       setError(err?.response?.data?.detail || err.message)
     }
@@ -126,24 +182,28 @@ export default function ReviewPage({ runId }) {
   const stageHealth = stageHealthByState[status?.state] || stageHealthByState.PENDING
   const isLoading = !status && !error && events.length === 0 && livePackets.length === 0
 
+  const uncertainCount = sortedEvents.filter((event) => event.uncertain).length
+
   return (
     <Stack gap={5}>
-      <Card.Root variant="elevated" bg="bg.surface" border="1px solid" borderColor="border.subtle">
+      <Card.Root variant="elevated" bg="bg.surface" border="1px solid" borderColor="border">
         <Card.Header>
           <HStack justify="space-between" align="center" flexWrap="wrap" gap={3}>
-            <Card.Title fontSize={{ base: 'xl', md: '2xl' }}>Review Violations</Card.Title>
+            <Card.Title fontSize={{ base: 'xl', md: '2xl' }}>Review Incidents</Card.Title>
             <HStack gap={2}>
               <Status.Root colorPalette={stageHealth.colorPalette} size="sm">
                 <Status.Indicator />
                 {stageHealth.label}
               </Status.Root>
               {status?.state && <StatusPill value={status.state} />}
-              <Badge colorPalette={provisional ? 'orange' : 'green'} variant="surface" px={3} py={1.5}>
-                {provisional ? 'LIVE' : 'FINAL'}
+              <Badge colorPalette={provisional ? 'teal' : 'green'} variant="subtle" px={3} py={1.5}>
+                {provisional ? 'Updating live' : 'Final list'}
               </Badge>
             </HStack>
           </HStack>
-          <Card.Description color="text.muted">Run ID: {runId}</Card.Description>
+          <Card.Description color="text.muted">
+            Confirm each incident before downloading the final report package.
+          </Card.Description>
         </Card.Header>
         <Card.Body>
           {isLoading && (
@@ -153,47 +213,40 @@ export default function ReviewPage({ runId }) {
               <Skeleton height="80px" borderRadius="lg" />
             </Stack>
           )}
+
           {status && (
             <Stack gap={4}>
               <Progress.Root
                 value={Number(status.progress_pct || 0)}
-                colorPalette={status.state === 'FAILED' ? 'red' : 'cyan'}
+                colorPalette={status.state === 'FAILED' ? 'red' : 'teal'}
                 striped
                 animated={status.state === 'RUNNING'}
               >
                 <HStack justify="space-between" mb={1}>
-                  <Progress.Label fontWeight="600">Pipeline Progress</Progress.Label>
+                  <Progress.Label fontWeight="600">Analysis progress</Progress.Label>
                   <Progress.ValueText color="text.muted" />
                 </HStack>
                 <Progress.Track>
                   <Progress.Range />
                 </Progress.Track>
               </Progress.Root>
+
               <SimpleGrid columns={{ base: 2, md: 4 }} gap={3}>
                 <Stat.Root size="sm" bg="bg.elevated" px={3} py={2.5} borderRadius="md">
-                  <Stat.Label>Events</Stat.Label>
+                  <Stat.Label>Incidents found</Stat.Label>
                   <Stat.ValueText>{sortedEvents.length}</Stat.ValueText>
                 </Stat.Root>
                 <Stat.Root size="sm" bg="bg.elevated" px={3} py={2.5} borderRadius="md">
-                  <Stat.Label>Live Packets</Stat.Label>
+                  <Stat.Label>Need attention</Stat.Label>
+                  <Stat.ValueText>{uncertainCount}</Stat.ValueText>
+                </Stat.Root>
+                <Stat.Root size="sm" bg="bg.elevated" px={3} py={2.5} borderRadius="md">
+                  <Stat.Label>Incoming checks</Stat.Label>
                   <Stat.ValueText>{livePackets.length}</Stat.ValueText>
                 </Stat.Root>
                 <Stat.Root size="sm" bg="bg.elevated" px={3} py={2.5} borderRadius="md">
-                  <Stat.Label>Stage</Stat.Label>
-                  <Stat.ValueText fontSize="md">{status.stage}</Stat.ValueText>
-                </Stat.Root>
-                <Stat.Root size="sm" bg="bg.elevated" px={3} py={2.5} borderRadius="md">
-                  <Stat.Label>Stream</Stat.Label>
-                  <Stat.ValueText fontSize="md">
-                    {status.state === 'RUNNING' ? (
-                      <HStack gap={2}>
-                        <Spinner size="xs" color="cyan.300" />
-                        <Text>Live</Text>
-                      </HStack>
-                    ) : (
-                      'Idle'
-                    )}
-                  </Stat.ValueText>
+                  <Stat.Label>Current step</Stat.Label>
+                  <Stat.ValueText fontSize="md">{stageLabelByValue[status.stage] || 'Processing'}</Stat.ValueText>
                 </Stat.Root>
               </SimpleGrid>
             </Stack>
@@ -202,16 +255,17 @@ export default function ReviewPage({ runId }) {
       </Card.Root>
 
       {error && (
-        <Alert.Root status="error" borderRadius="md">
+        <Alert.Root status="error" borderRadius="md" variant="subtle">
           <Alert.Indicator />
           <Alert.Content>
-            <Alert.Title>Review Error</Alert.Title>
+            <Alert.Title>Could not load review data</Alert.Title>
             <Alert.Description>{error}</Alert.Description>
           </Alert.Content>
         </Alert.Root>
       )}
+
       {message && (
-        <Alert.Root status="success" borderRadius="md">
+        <Alert.Root status="success" borderRadius="md" variant="subtle">
           <Alert.Indicator />
           <Alert.Content>
             <Alert.Title>Saved</Alert.Title>
@@ -221,57 +275,44 @@ export default function ReviewPage({ runId }) {
       )}
 
       {sortedEvents.length === 0 && livePackets.length === 0 && !isLoading && (
-        <Card.Root variant="outline" bg="bg.surface">
+        <Card.Root variant="outline" bg="bg.surface" borderColor="border">
           <Card.Body>
-            <Text color="text.muted">No events yet.</Text>
+            <Text color="text.muted">No incidents are ready yet. Please wait while we continue processing.</Text>
           </Card.Body>
         </Card.Root>
       )}
 
       {sortedEvents.length === 0 && livePackets.length > 0 && (
-        <Card.Root variant="elevated" bg="bg.surface" border="1px solid" borderColor="border.subtle">
+        <Card.Root variant="elevated" bg="bg.surface" border="1px solid" borderColor="border">
           <Card.Header>
-            <Card.Title fontSize="lg">Live Packet Monitor</Card.Title>
+            <Card.Title fontSize="lg">Incoming Potential Incidents</Card.Title>
             <Card.Description color="text.muted">
-              Showing top packets by local score while final incidents are still forming.
+              These are possible incidents that are still being verified.
             </Card.Description>
           </Card.Header>
           <Card.Body>
             <Stack gap={3}>
               {livePackets.map((packet) => {
-                const anchors = Array.isArray(packet.anchor_frames) ? packet.anchor_frames.map((frame) => frame.path).filter(Boolean) : []
+                const anchors = Array.isArray(packet.anchor_frames)
+                  ? packet.anchor_frames.map((frame) => frame.path).filter(Boolean)
+                  : []
+
                 return (
-                  <Card.Root key={packet.packet_id} variant="outline" bg="bg.elevated">
+                  <Card.Root key={packet.packet_id} variant="outline" bg="bg.elevated" borderColor="border">
                     <Card.Body gap={3}>
                       <HStack justify="space-between" align="center" flexWrap="wrap" gap={2}>
-                        <Text fontWeight="700">{packet.packet_id}</Text>
-                        <HStack gap={2}>
-                          <Badge colorPalette={traceTone[packet.flash?.status] || traceTone.pending} variant="surface">
-                            Flash: {packet.flash?.status || 'pending'}
-                          </Badge>
-                          <Badge colorPalette={traceTone[packet.pro?.status] || traceTone.pending} variant="surface">
-                            Pro: {packet.pro?.status || 'pending'}
-                          </Badge>
-                        </HStack>
+                        <Text fontWeight="700">{typeLabelByValue[packet.local?.proposed_event_type] || 'Potential incident'}</Text>
+                        <Badge colorPalette="teal" variant="subtle">Being verified</Badge>
                       </HStack>
 
-                      <DataList.Root size="sm" variant="subtle" orientation="vertical">
-                        <DataList.Item>
-                          <DataList.ItemLabel>Local Proposal</DataList.ItemLabel>
-                          <DataList.ItemValue>{packet.local?.proposed_event_type || 'N/A'}</DataList.ItemValue>
-                        </DataList.Item>
-                        <DataList.Item>
-                          <DataList.ItemLabel>Local Score</DataList.ItemLabel>
-                          <DataList.ItemValue>{Number(packet.local?.local_score || 0).toFixed(3)}</DataList.ItemValue>
-                        </DataList.Item>
-                        <DataList.Item>
-                          <DataList.ItemLabel>Routing</DataList.ItemLabel>
-                          <DataList.ItemValue>{(packet.routing?.routing_reason || []).join(', ') || 'pending'}</DataList.ItemValue>
-                        </DataList.Item>
-                      </DataList.Root>
+                      <HStack gap={2} flexWrap="wrap">
+                        <Badge colorPalette="gray" variant="subtle">
+                          Confidence {Math.round(Number(packet.local?.local_score || 0) * 100)}%
+                        </Badge>
+                      </HStack>
 
                       {anchors.length > 0 && (
-                        <SimpleGrid columns={{ base: 2, md: 3 }} gap={2}>
+                        <SimpleGrid columns={{ base: 1, sm: 2, md: 3 }} gap={3}>
                           {anchors.slice(0, 3).map((path, idx) => {
                             const src = artifactUrl(path)
                             return (
@@ -281,7 +322,7 @@ export default function ReviewPage({ runId }) {
                                 type="button"
                                 onClick={() =>
                                   openEvidenceLightbox({
-                                    title: `${packet.packet_id} - Anchor Frames`,
+                                    title: 'Potential Incident Frames',
                                     images: anchors.map((imgPath) => artifactUrl(imgPath)),
                                     index: idx,
                                   })
@@ -289,14 +330,24 @@ export default function ReviewPage({ runId }) {
                                 borderRadius="md"
                                 overflow="hidden"
                                 border="1px solid"
-                                borderColor="border.subtle"
+                                borderColor="border"
                               >
-                                <Image src={src} alt={`${packet.packet_id}-${idx + 1}`} h="92px" w="full" objectFit="cover" />
+                                <AspectRatio ratio={16 / 9}>
+                                  <Image src={src} alt={`potential-${idx + 1}`} objectFit="cover" />
+                                </AspectRatio>
                               </Box>
                             )
                           })}
                         </SimpleGrid>
                       )}
+
+                      <Box as="details" border="1px dashed" borderColor="border" borderRadius="md" px={3} py={2}>
+                        <Text as="summary" fontWeight="600" cursor="pointer">Technical details</Text>
+                        <Stack gap={1.5} mt={2}>
+                          <Text fontSize="sm" color="text.muted">Packet: {packet.packet_id}</Text>
+                          <Text fontSize="sm" color="text.muted">Routing: {(packet.routing?.routing_reason || []).join(', ') || 'N/A'}</Text>
+                        </Stack>
+                      </Box>
                     </Card.Body>
                   </Card.Root>
                 )
@@ -310,75 +361,39 @@ export default function ReviewPage({ runId }) {
         const start = Number(event.start_time || 0)
         const end = Number(event.end_time || 0)
         const confidence = Number(event.confidence || 0)
-        const risk = Number(event.risk_score || 0)
         const traceEntry = traceByPacketId[event.packet_id]
         const evidenceFrames = Array.isArray(event.evidence_frames) ? event.evidence_frames : []
+        const priority = priorityFromRisk(event.risk_score)
 
         return (
-          <Card.Root key={event.event_id} variant="elevated" bg="bg.surface" border="1px solid" borderColor="border.subtle">
+          <Card.Root key={event.event_id} variant="elevated" bg="bg.surface" border="1px solid" borderColor="border">
             <Card.Header>
               <HStack justify="space-between" align="center" flexWrap="wrap" gap={3}>
                 <Stack gap={1}>
-                  <Card.Title fontSize="lg">{event.event_type}</Card.Title>
+                  <Card.Title fontSize="lg">{typeLabelByValue[event.event_type] || event.event_type}</Card.Title>
                   <Text color="text.muted" fontSize="sm">
-                    Event ID: {event.event_id}
+                    Time in video: {formatSeconds(start)} - {formatSeconds(end)}
                   </Text>
                 </Stack>
                 <HStack gap={2}>
-                  <Badge colorPalette={event.uncertain ? 'orange' : 'green'} variant="surface">
-                    {event.uncertain ? 'Uncertain' : 'Validated'}
-                  </Badge>
-                  {event.provisional && (
-                    <Badge colorPalette="orange" variant="subtle">Live</Badge>
-                  )}
+                  <Badge colorPalette="blue" variant="subtle">Confidence {Math.round(confidence * 100)}%</Badge>
+                  <Badge colorPalette={priority.tone} variant="subtle">Priority {priority.label}</Badge>
                 </HStack>
               </HStack>
             </Card.Header>
 
             <Card.Body>
               <Stack gap={4}>
-                <DataList.Root size="sm" variant="subtle" orientation="vertical">
-                  <DataList.Item>
-                    <DataList.ItemLabel>Packet</DataList.ItemLabel>
-                    <DataList.ItemValue>{event.packet_id || 'N/A'}</DataList.ItemValue>
-                  </DataList.Item>
-                  <DataList.Item>
-                    <DataList.ItemLabel>Source</DataList.ItemLabel>
-                    <DataList.ItemValue>{event.source_stage || 'N/A'}</DataList.ItemValue>
-                  </DataList.Item>
-                  <DataList.Item>
-                    <DataList.ItemLabel>Window</DataList.ItemLabel>
-                    <DataList.ItemValue>{start.toFixed(2)}s - {end.toFixed(2)}s</DataList.ItemValue>
-                  </DataList.Item>
-                  <DataList.Item>
-                    <DataList.ItemLabel>Confidence</DataList.ItemLabel>
-                    <DataList.ItemValue>{confidence.toFixed(2)}</DataList.ItemValue>
-                  </DataList.Item>
-                  <DataList.Item>
-                    <DataList.ItemLabel>Risk</DataList.ItemLabel>
-                    <DataList.ItemValue>{risk.toFixed(1)}</DataList.ItemValue>
-                  </DataList.Item>
-                </DataList.Root>
-
-                <Box px={3} py={2.5} borderRadius="md" bg="bg.elevated" border="1px solid" borderColor="border.subtle">
-                  <Text fontSize="sm" color="text.muted">{event.explanation_short}</Text>
-                </Box>
-
-                <HStack gap={2} flexWrap="wrap">
-                  <Badge colorPalette="gray" variant="surface">
-                    Plate: {event.plate_text || 'N/A'}
-                  </Badge>
-                  {event.plate_confidence != null && (
-                    <Badge colorPalette="cyan" variant="subtle">
-                      Plate conf {Number(event.plate_confidence).toFixed(2)}
-                    </Badge>
-                  )}
-                </HStack>
+                {event.explanation_short && (
+                  <Box px={3} py={2.5} borderRadius="md" bg="bg.elevated" border="1px solid" borderColor="border">
+                    <Text fontSize="sm" color="text.muted">{event.explanation_short}</Text>
+                  </Box>
+                )}
 
                 {evidenceFrames.length > 0 && (
                   <Stack gap={2}>
-                    <Text fontWeight="600" fontSize="sm">Evidence Frames</Text>
-                    <SimpleGrid columns={{ base: 2, md: 3 }} gap={2}>
+                    <Text fontWeight="600" fontSize="sm">Evidence</Text>
+                    <SimpleGrid columns={{ base: 1, sm: 2, md: 3 }} gap={3}>
                       {evidenceFrames.slice(0, 3).map((path, idx) => {
                         const src = artifactUrl(path)
                         return (
@@ -388,7 +403,7 @@ export default function ReviewPage({ runId }) {
                             type="button"
                             onClick={() =>
                               openEvidenceLightbox({
-                                title: `${event.event_type} - ${event.event_id}`,
+                                title: `${typeLabelByValue[event.event_type] || 'Incident'} Evidence`,
                                 images: evidenceFrames.map((imgPath) => artifactUrl(imgPath)),
                                 index: idx,
                               })
@@ -396,11 +411,13 @@ export default function ReviewPage({ runId }) {
                             borderRadius="md"
                             overflow="hidden"
                             border="1px solid"
-                            borderColor="border.subtle"
+                            borderColor="border"
                             transition="transform 160ms ease"
                             _hover={{ transform: 'translateY(-2px)' }}
                           >
-                            <Image src={src} alt={`${event.event_id}-${idx + 1}`} h="104px" w="full" objectFit="cover" />
+                            <AspectRatio ratio={16 / 9}>
+                              <Image src={src} alt={`${event.event_id}-${idx + 1}`} objectFit="cover" />
+                            </AspectRatio>
                           </Box>
                         )
                       })}
@@ -408,32 +425,11 @@ export default function ReviewPage({ runId }) {
                   </Stack>
                 )}
 
-                {traceEntry && (
-                  <Box as="details" px={3} py={2.5} borderRadius="md" bg="bg.elevated" border="1px dashed" borderColor="border.subtle">
-                    <Text as="summary" fontWeight="600" cursor="pointer">Lineage Trace</Text>
-                    <Stack gap={2} mt={3}>
-                      <Text fontSize="sm" color="text.muted">
-                        Local: {traceEntry.local?.proposed_event_type || 'N/A'} (score {Number(traceEntry.local?.local_score || 0).toFixed(3)})
-                      </Text>
-                      <Text fontSize="sm" color="text.muted">
-                        Routing: {(traceEntry.routing?.routing_reason || []).join(', ') || 'N/A'}
-                      </Text>
-                      <HStack gap={2} flexWrap="wrap">
-                        <Badge colorPalette={traceTone[traceEntry.flash?.status] || traceTone.pending} variant="surface">
-                          Flash: {traceEntry.flash?.status || 'N/A'}
-                        </Badge>
-                        <Badge colorPalette={traceTone[traceEntry.pro?.status] || traceTone.pending} variant="surface">
-                          Pro: {traceEntry.pro?.status || 'N/A'}
-                        </Badge>
-                      </HStack>
-                      {Array.isArray(traceEntry.local?.reason_codes) && traceEntry.local.reason_codes.length > 0 && (
-                        <Text fontSize="sm" color="text.muted">
-                          Reasons: {traceEntry.local.reason_codes.join(', ')}
-                        </Text>
-                      )}
-                    </Stack>
-                  </Box>
-                )}
+                <SimpleGrid columns={{ base: 1, sm: 2, md: 3 }} gap={3}>
+                  <MetaCard label="Detected by" value={sourceLabelByValue[event.source_stage] || 'AI analysis'} tone="gray" />
+                  <MetaCard label="Plate number" value={event.plate_text || 'Not visible'} tone={event.plate_text ? 'green' : 'gray'} />
+                  <MetaCard label="Review status" value={event.uncertain ? 'Needs attention' : 'Looks clear'} tone={event.uncertain ? 'orange' : 'green'} />
+                </SimpleGrid>
 
                 <SimpleGrid columns={{ base: 1, md: 2 }} gap={3}>
                   <Box>
@@ -449,17 +445,18 @@ export default function ReviewPage({ runId }) {
                         }
                         bg="bg.elevated"
                       >
-                        <option value="ACCEPT">ACCEPT</option>
-                        <option value="REJECT">REJECT</option>
+                        <option value="ACCEPT">Accept</option>
+                        <option value="REJECT">Reject</option>
                       </NativeSelect.Field>
                       <NativeSelect.Indicator />
                     </NativeSelect.Root>
                   </Box>
 
                   <Box>
-                    <Text fontWeight="600" fontSize="sm" mb={1.5}>Reviewer Notes</Text>
+                    <Text fontWeight="600" fontSize="sm" mb={1.5}>Notes</Text>
                     <Textarea
                       rows={3}
+                      placeholder="Add any notes for this incident"
                       value={(decisions[event.event_id] || {}).reviewer_notes || ''}
                       onChange={(e) =>
                         setDecisions((d) => ({
@@ -484,15 +481,27 @@ export default function ReviewPage({ runId }) {
                           [event.event_id]: { ...(d[event.event_id] || {}), include_plate: e.target.checked },
                         }))
                       }
-                      accentColor="#2dd4bf"
+                      accentColor="#29b8a9"
                     />
-                    <Text>Include plate in report</Text>
+                    <Text>Include plate number in report</Text>
                   </HStack>
 
-                  <Button colorPalette="cyan" onClick={() => saveDecision(event.event_id)}>
+                  <Button colorPalette="teal" onClick={() => saveDecision(event.event_id)}>
                     Save Decision
                   </Button>
                 </HStack>
+
+                {traceEntry && (
+                  <Box as="details" border="1px dashed" borderColor="border" borderRadius="md" px={3} py={2.5} bg="bg.elevated">
+                    <Text as="summary" fontWeight="600" cursor="pointer">Technical details</Text>
+                    <Stack gap={2} mt={3}>
+                      <Text fontSize="sm" color="text.muted">Event ID: {event.event_id}</Text>
+                      <Text fontSize="sm" color="text.muted">Packet: {event.packet_id || 'N/A'}</Text>
+                      <Text fontSize="sm" color="text.muted">Local score: {Number(traceEntry.local?.local_score || 0).toFixed(3)}</Text>
+                      <Text fontSize="sm" color="text.muted">AI routing: {(traceEntry.routing?.routing_reason || []).join(', ') || 'N/A'}</Text>
+                    </Stack>
+                  </Box>
+                )}
               </Stack>
             </Card.Body>
           </Card.Root>
@@ -501,7 +510,7 @@ export default function ReviewPage({ runId }) {
 
       <HStack justify="flex-end">
         <Button colorPalette="blue" size="lg" onClick={exportPack}>
-          Export Case Pack
+          Download Report Package
         </Button>
       </HStack>
 

@@ -11,14 +11,14 @@ export default function App() {
   const [screen, setScreen] = useState('upload')
 
   const screenTitleByKey = {
-    upload: 'Create Run',
-    status: 'Pipeline Live Status',
-    review: 'Incident Review',
+    upload: 'Upload Video',
+    status: 'Processing',
+    review: 'Review Incidents',
   }
 
   const navItems = [
-    { key: 'upload', label: 'New Run', enabled: true },
-    { key: 'status', label: 'Status', enabled: Boolean(runId) },
+    { key: 'upload', label: 'Upload', enabled: true },
+    { key: 'status', label: 'Processing', enabled: Boolean(runId) },
     { key: 'review', label: 'Review', enabled: Boolean(runId) },
   ]
 
@@ -29,16 +29,16 @@ export default function App() {
           variant="elevated"
           bg="bg.overlay"
           border="1px solid"
-          borderColor="border.subtle"
-          backdropFilter="blur(12px)"
-          boxShadow="0 20px 55px rgba(0, 0, 0, 0.35)"
+          borderColor="border"
+          backdropFilter="blur(10px)"
+          boxShadow="0 14px 34px rgba(2, 8, 20, 0.32)"
         >
           <Card.Body gap={4}>
             <HStack justify="space-between" align="flex-start" flexWrap="wrap" gap={4}>
               <Stack gap={2}>
                 <BrandMark />
                 <Text color="text.muted" maxW="2xl">
-                  Monitor traffic incident detection runs, inspect live packet lineage, and finalize review decisions.
+                  Upload road footage, track analysis progress, and review incident evidence before downloading your report.
                 </Text>
               </Stack>
               <HStack
@@ -46,7 +46,7 @@ export default function App() {
                 py={2}
                 borderRadius="lg"
                 border="1px solid"
-                borderColor="border.subtle"
+                borderColor="border"
                 bg="bg.surface"
                 color="text.muted"
               >
@@ -63,7 +63,7 @@ export default function App() {
                   <Button
                     key={item.key}
                     variant={screen === item.key ? 'solid' : 'subtle'}
-                    colorPalette={screen === item.key ? 'cyan' : 'gray'}
+                    colorPalette={screen === item.key ? 'teal' : 'gray'}
                     disabled={!item.enabled}
                     onClick={() => setScreen(item.key)}
                   >
@@ -72,8 +72,8 @@ export default function App() {
                 ))}
               </ButtonGroup>
               {runId && (
-                <Badge colorPalette="cyan" variant="surface" px={3} py={1.5} borderRadius="full">
-                  Run: {runId}
+                <Badge colorPalette="gray" variant="subtle" px={3} py={1.5} borderRadius="full" color="text.muted">
+                  Session: {runId.slice(0, 8)}
                 </Badge>
               )}
             </HStack>

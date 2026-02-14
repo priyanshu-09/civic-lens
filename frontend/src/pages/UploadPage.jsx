@@ -1,33 +1,26 @@
-import { useState } from 'react'
-import { Alert, Badge, Box, Button, Card, Field, HStack, Input, Spinner, Stack, Text, Textarea } from '@chakra-ui/react'
-import { FiUploadCloud } from 'react-icons/fi'
+import { useRef, useState } from 'react'
+import { Alert, Badge, Box, Button, Card, HStack, Input, Spinner, Stack, Text } from '@chakra-ui/react'
+import { FiUploadCloud, FiVideo } from 'react-icons/fi'
 import { client } from '../api/client'
-
-const defaultRoi = {
-  stop_line_polygon: [[0.15, 0.7], [0.85, 0.7], [0.85, 0.74], [0.15, 0.74]],
-  signal_roi_polygon: [[0.75, 0.05], [0.95, 0.05], [0.95, 0.25], [0.75, 0.25]],
-  wrong_side_lane_polygon: [[0.0, 0.55], [0.45, 0.55], [0.45, 1.0], [0.0, 1.0]],
-  expected_direction_vector: [1.0, 0.0],
-}
 
 export default function UploadPage({ onRunCreated }) {
   const [file, setFile] = useState(null)
-  const [roiText, setRoiText] = useState(JSON.stringify(defaultRoi, null, 2))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const fileInputRef = useRef(null)
 
   const submit = async () => {
     if (!file) {
-      setError('Select a video file first')
+      setError('Please choose a video file first.')
       return
     }
+
     setLoading(true)
     setError('')
 
     try {
       const form = new FormData()
       form.append('video', file)
-      form.append('roi_config_json', roiText)
       const createResp = await client.post('/api/runs', form)
       const runId = createResp.data.run_id
       await client.post(`/api/runs/${runId}/start`)
@@ -44,15 +37,17 @@ export default function UploadPage({ onRunCreated }) {
       variant="elevated"
       bg="bg.surface"
       border="1px solid"
-      borderColor="border.subtle"
-      boxShadow="0 24px 60px rgba(1, 6, 16, 0.35)"
+      borderColor="border"
+      boxShadow="0 16px 34px rgba(2, 8, 20, 0.30)"
+      maxW="3xl"
+      mx="auto"
     >
       <Card.Header>
         <Card.Title fontSize={{ base: 'xl', md: '2xl' }}>
-          Upload Video
+          Upload a Traffic Video
         </Card.Title>
         <Card.Description color="text.muted">
-          Upload a 30-90s daytime dashcam clip and start analysis.
+          Add your road footage and we will find possible traffic incidents for you to review.
         </Card.Description>
       </Card.Header>
       <Card.Body>
@@ -69,20 +64,58 @@ export default function UploadPage({ onRunCreated }) {
               justifyContent="center"
               backdropFilter="blur(6px)"
             >
-              <HStack gap={3} px={4} py={3} borderRadius="lg" bg="bg.elevated" border="1px solid" borderColor="border.subtle">
-                <Spinner color="cyan.300" size="sm" />
-                <Text fontWeight="600">Starting analysis...</Text>
+              <HStack gap={3} px={4} py={3} borderRadius="lg" bg="bg.elevated" border="1px solid" borderColor="border">
+                <Spinner color="teal.300" size="sm" />
+                <Text fontWeight="600">Starting your analysis...</Text>
               </HStack>
             </Box>
           )}
 
-          <Field.Root required>
-            <Field.Label>Video File</Field.Label>
-            <Input type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-            <Field.HelperText color="text.soft">
-              MP4/MOV recommended for fastest processing.
-            </Field.HelperText>
-          </Field.Root>
+          <Input
+            ref={fileInputRef}
+            type="file"
+            accept="video/*"
+            display="none"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+          />
+
+          <Box
+            border="1px dashed"
+            borderColor="border"
+            borderRadius="lg"
+            px={{ base: 4, md: 6 }}
+            py={{ base: 6, md: 8 }}
+            bg="bg.elevated"
+          >
+            <Stack align="center" gap={3} textAlign="center">
+              <Box
+                w="12"
+                h="12"
+                borderRadius="full"
+                bg="rgba(41, 184, 169, 0.18)"
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                color="teal.200"
+              >
+                <FiVideo size={22} />
+              </Box>
+              <Text fontWeight="700" fontSize="lg">Choose your video file</Text>
+              <Text color="text.muted" fontSize="sm">
+                MP4 and MOV work best.
+              </Text>
+              <Button
+                colorPalette="teal"
+                variant="solid"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <HStack gap={2}>
+                  <FiUploadCloud />
+                  <Text>Select Video</Text>
+                </HStack>
+              </Button>
+            </Stack>
+          </Box>
 
           {file && (
             <HStack
@@ -91,38 +124,26 @@ export default function UploadPage({ onRunCreated }) {
               py={2.5}
               borderRadius="md"
               border="1px solid"
-              borderColor="border.subtle"
+              borderColor="border"
               bg="bg.elevated"
               flexWrap="wrap"
               gap={2}
             >
-              <HStack gap={2}>
+              <HStack gap={2} color="text.primary">
                 <FiUploadCloud />
                 <Text fontWeight="600">{file.name}</Text>
               </HStack>
-              <Badge colorPalette="cyan" variant="surface">
+              <Badge colorPalette="gray" variant="subtle" color="text.muted">
                 {(file.size / (1024 * 1024)).toFixed(1)} MB
               </Badge>
             </HStack>
           )}
 
-          <Field.Root>
-            <Field.Label>ROI Config (JSON)</Field.Label>
-            <Textarea
-              value={roiText}
-              onChange={(e) => setRoiText(e.target.value)}
-              rows={12}
-              fontFamily="mono"
-              resize="vertical"
-              bg="bg.elevated"
-            />
-          </Field.Root>
-
           {error && (
-            <Alert.Root status="error" borderRadius="md">
+            <Alert.Root status="error" borderRadius="md" variant="subtle">
               <Alert.Indicator />
               <Alert.Content>
-                <Alert.Title>Unable to start run</Alert.Title>
+                <Alert.Title>Could not start analysis</Alert.Title>
                 <Alert.Description>{error}</Alert.Description>
               </Alert.Content>
             </Alert.Root>
@@ -132,13 +153,13 @@ export default function UploadPage({ onRunCreated }) {
             onClick={submit}
             disabled={loading}
             loading={loading}
-            loadingText="Starting..."
-            colorPalette="cyan"
+            loadingText="Starting"
+            colorPalette="teal"
             size="lg"
-            alignSelf="flex-start"
-            px={8}
+            alignSelf="center"
+            minW="220px"
           >
-            Analyze
+            Start Analysis
           </Button>
         </Stack>
       </Card.Body>
